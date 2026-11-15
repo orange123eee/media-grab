@@ -1,14 +1,18 @@
 """Xiaohongshu extractor: watermark-free high-res images, live photos, and highest-bitrate videos."""
 
+import hashlib
 import html as html_lib
 import json
+import queue
 import re
+import threading
+import time
 import urllib.request
 from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 from ..config import Config
-from ..http_client import HttpClient, HttpError
+from ..http_client import HttpClient, HttpError, warm_urls
 from ..utils import dedupe_keep_order, extract_balanced_json, loads_relaxed_json, normalize_http_url
 from . import ExtractResult, ExtractionError, MediaAsset
 
@@ -529,13 +533,192 @@ def _try_extract_meta(html: str, preferred_id: str, config: Config) -> Optional[
         return None
 
 
-def _fetch_xhs(
+_SHORTLINK_HOSTS = ("xhslink.com", "xhslink.cn")
+_RESULT_CACHE_TTL = 60.0
+_RESULT_CACHE_MAX = 32
+_SHORTLINK_CACHE_TTL = 120.0
+_SHORTLINK_CACHE_MAX = 64
+_ROUTE_PREF_TTL = 180.0
+
+_CACHE_LOCK = threading.Lock()
+_RESULT_CACHE: Dict[Tuple[str, str, bool], Tuple[float, ExtractResult]] = {}
+_SHORTLINK_CACHE: Dict[str, Tuple[float, str]] = {}
+_PREFERRED_ROUTE: Dict[str, Tuple[float, bool, bool]] = {}
+
+
+def _cookie_fingerprint(url: str, client: Any, config: Config) -> str:
+    cookie_fn = getattr(client, "cookie_for_url", None)
+    raw = str(config.xhs_cookie or "")
+    if not raw and callable(cookie_fn):
+        raw = str(cookie_fn("https://www.xiaohongshu.com/") or cookie_fn(url) or "")
+    return hashlib.sha256(raw.encode("utf-8", "ignore")).hexdigest()[:16] if raw else ""
+
+
+def _get_cached_result(lookup_key: str, cookie_fp: str, save_live: bool) -> Optional[ExtractResult]:
+    key = (lookup_key, cookie_fp, save_live)
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        entry = _RESULT_CACHE.get(key)
+        if not entry:
+            return None
+        exp, res = entry
+        if now >= exp:
+            _RESULT_CACHE.pop(key, None)
+            return None
+        return res
+
+
+def _put_cached_result(keys: List[str], cookie_fp: str, save_live: bool, res: ExtractResult) -> None:
+    exp = time.monotonic() + _RESULT_CACHE_TTL
+    with _CACHE_LOCK:
+        for lk in keys:
+            if not lk:
+                continue
+            _RESULT_CACHE[(lk, cookie_fp, save_live)] = (exp, res)
+        while len(_RESULT_CACHE) > _RESULT_CACHE_MAX:
+            oldest = min(_RESULT_CACHE.items(), key=lambda kv: kv[1][0])[0]
+            _RESULT_CACHE.pop(oldest, None)
+
+
+def _get_cached_shortlink(short_url: str) -> str:
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        entry = _SHORTLINK_CACHE.get(short_url)
+        if not entry:
+            return ""
+        exp, resolved = entry
+        if now >= exp:
+            _SHORTLINK_CACHE.pop(short_url, None)
+            return ""
+        return resolved
+
+
+def _put_cached_shortlink(short_url: str, resolved_url: str) -> None:
+    if not short_url or not resolved_url or not _extract_note_id(resolved_url):
+        return
+    exp = time.monotonic() + _SHORTLINK_CACHE_TTL
+    with _CACHE_LOCK:
+        _SHORTLINK_CACHE[short_url] = (exp, resolved_url)
+        while len(_SHORTLINK_CACHE) > _SHORTLINK_CACHE_MAX:
+            oldest = min(_SHORTLINK_CACHE.items(), key=lambda kv: kv[1][0])[0]
+            _SHORTLINK_CACHE.pop(oldest, None)
+
+
+def _get_preferred_route(cookie_fp: str) -> Tuple[bool, bool]:
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        entry = _PREFERRED_ROUTE.get(cookie_fp)
+        if not entry:
+            return False, True
+        exp, mobile, use_proxy = entry
+        if now >= exp:
+            _PREFERRED_ROUTE.pop(cookie_fp, None)
+            return False, True
+        return mobile, use_proxy
+
+
+def _set_preferred_route(cookie_fp: str, mobile: bool, use_proxy: bool) -> None:
+    exp = time.monotonic() + _ROUTE_PREF_TTL
+    with _CACHE_LOCK:
+        _PREFERRED_ROUTE[cookie_fp] = (exp, bool(mobile), bool(use_proxy))
+
+
+def prewarm(config: Optional[Config] = None) -> None:
+    """Warm DNS + TLS Keep-Alive connections for Xiaohongshu pages and CDNs."""
+    warm_urls(
+        [
+            "https://www.xiaohongshu.com/",
+            "https://xhslink.cn/",
+            "https://sns-img-hw.xhscdn.com/",
+            "https://sns-webpic-qc.xhscdn.com/",
+        ],
+        timeout=3.0,
+    )
+
+
+def _is_shortlink(url: str) -> bool:
+    if _extract_note_id(url):
+        return False
+    host = (urlparse(url).hostname or "").lower()
+    return any(host == d or host.endswith("." + d) for d in _SHORTLINK_HOSTS)
+
+
+def _resolve_shortlink_once(
+    url: str,
     client: HttpClient,
+    config: Config,
+    probe_timeout: int,
+    has_proxy: bool,
+    prefer_proxy: bool,
+) -> Tuple[str, Optional[ExtractResult]]:
+    """Resolve xhslink once (with cache) so fallback probes skip redundant shortlink hops."""
+    cached = _get_cached_shortlink(url)
+    if cached:
+        return cached, None
+
+    hop_timeout = min(probe_timeout, 5)
+    proxy_order = [prefer_proxy]
+    if has_proxy:
+        proxy_order.append(not prefer_proxy)
+
+    for use_proxy in proxy_order:
+        try:
+            resp = client.get(
+                url,
+                mobile=True,
+                follow_redirects=False,
+                timeout=hop_timeout,
+                use_proxy=use_proxy,
+            )
+        except HttpError:
+            continue
+
+        loc = resp.headers.get("location") or ""
+        if loc:
+            full_loc = urljoin(url, loc)
+            recovered = _recover_target_url(full_loc, full_loc)
+            _put_cached_shortlink(url, recovered)
+            return recovered, None
+
+        if resp.status < 300 and resp.body:
+            html = resp.text()
+            pref_id = _extract_note_id(resp.url or url)
+            ssr = _try_extract_ssr(html, pref_id, config)
+            if ssr is not None:
+                return (resp.url or url), ssr
+            recovered = _recover_target_url(resp.url or "", url)
+            if recovered != url:
+                _put_cached_shortlink(url, recovered)
+                return recovered, None
+        break
+    return url, None
+
+
+def _fetch_xhs(
+    client: Any,
     target_url: str,
     headers: Dict[str, str],
     mobile: bool,
     use_proxy: bool,
+    timeout: Optional[int] = None,
 ):
+    if timeout is not None and isinstance(client, HttpClient):
+        if not use_proxy:
+            return client.get(
+                target_url,
+                headers=headers,
+                mobile=mobile,
+                follow_redirects=True,
+                timeout=timeout,
+                use_proxy=False,
+            )
+        return client.get(
+            target_url,
+            headers=headers,
+            mobile=mobile,
+            follow_redirects=True,
+            timeout=timeout,
+        )
     if not use_proxy:
         try:
             return client.get(target_url, headers=headers, mobile=mobile, follow_redirects=True, use_proxy=False)
@@ -545,8 +728,23 @@ def _fetch_xhs(
 
 
 def extract_xiaohongshu(url: str, client: HttpClient, config: Config) -> ExtractResult:
-    """Fetch Xiaohongshu share link across PC web and mobile H5 SSR with resilient fallbacks."""
+    """Fetch Xiaohongshu share link across PC web and mobile H5 SSR with fast caching and parallel fallbacks."""
     url = url.strip()
+    is_real_http = isinstance(client, HttpClient)
+    use_cache = type(client) is HttpClient
+    cookie_fp = _cookie_fingerprint(url, client, config) if is_real_http else ""
+
+    if use_cache:
+        cached = _get_cached_result(f"url:{url}", cookie_fp, config.save_live_photo_video)
+        if cached is not None:
+            return cached
+        direct_id = _extract_note_id(url)
+        if direct_id:
+            cached = _get_cached_result(f"id:{direct_id}", cookie_fp, config.save_live_photo_video)
+            if cached is not None:
+                return cached
+
+    state_lock = threading.Lock()
     first_resp_url = ""
     meta_fallback: Optional[ExtractResult] = None
     saw_block = False
@@ -554,79 +752,201 @@ def extract_xiaohongshu(url: str, client: HttpClient, config: Config) -> Extract
     last_http_error: Optional[Exception] = None
     tried: Set[Tuple[str, bool, bool, bool]] = set()
 
-    def _run_attempt(target_url: str, headers: Dict[str, str], mobile: bool, use_proxy: bool) -> Optional[ExtractResult]:
+    def _run_attempt(
+        target_url: str,
+        headers: Dict[str, str],
+        mobile: bool,
+        use_proxy: bool,
+        timeout: Optional[int] = None,
+    ) -> Optional[ExtractResult]:
         nonlocal first_resp_url, meta_fallback, saw_block, saw_html, last_http_error
         strip_cookie = "Cookie" in headers and headers["Cookie"] == ""
         key = (target_url, mobile, strip_cookie, use_proxy)
-        if not target_url or key in tried:
+        if not target_url:
             return None
-        tried.add(key)
+        with state_lock:
+            if key in tried:
+                return None
+            tried.add(key)
 
         try:
-            resp = _fetch_xhs(client, target_url, headers, mobile, use_proxy)
+            resp = _fetch_xhs(client, target_url, headers, mobile, use_proxy, timeout=timeout)
         except HttpError as e:
-            last_http_error = e
+            with state_lock:
+                last_http_error = e
             return None
 
-        saw_html = True
-        if not first_resp_url:
-            first_resp_url = resp.url or target_url
         html = resp.text()
-        pref_id = _extract_note_id(resp.url or target_url) or _extract_note_id(url)
+        resp_url = resp.url or target_url
+        pref_id = _extract_note_id(resp_url) or _extract_note_id(url)
 
-        path = (urlparse(resp.url or "").path or "").lower()
+        path = (urlparse(resp_url).path or "").lower()
         is_error_route = "/404" in path or "/login" in path or "/website-login" in path
+        ssr_res: Optional[ExtractResult] = None
+        meta_cand: Optional[ExtractResult] = None
+        blocked = False
+
         if not is_error_route:
             ssr_res = _try_extract_ssr(html, pref_id, config)
-            if ssr_res is not None:
-                return ssr_res
-            if meta_fallback is None:
-                meta_fallback = _try_extract_meta(html, pref_id, config)
+            if ssr_res is None:
+                meta_cand = _try_extract_meta(html, pref_id, config)
+        if ssr_res is None:
+            blocked = _is_blocked_xhs_response(resp_url, html)
 
-        if _is_blocked_xhs_response(resp.url or "", html):
-            saw_block = True
-        return None
+        with state_lock:
+            saw_html = True
+            if not first_resp_url:
+                first_resp_url = resp_url
+            if ssr_res is None and meta_fallback is None and meta_cand is not None:
+                meta_fallback = meta_cand
+            if blocked:
+                saw_block = True
 
-    # Primary fast path: desktop PC Web SSR (highest video bitrate + author.nickname).
-    res = _run_attempt(url, XHS_DL_HEADERS, mobile=False, use_proxy=True)
-    if res is not None:
+        return ssr_res
+
+    def _cache_and_return(res: ExtractResult, extra_url: str = "") -> ExtractResult:
+        if use_cache:
+            keys = [f"url:{url}", f"id:{res.item_id}"]
+            if extra_url and extra_url != url:
+                keys.append(f"url:{extra_url}")
+            _put_cached_result(keys, cookie_fp, config.save_live_photo_video, res)
         return res
 
-    recovered_url = _recover_target_url(first_resp_url, url)
-    alt_url = _alt_route_url(recovered_url)
-    cookie_fn = getattr(client, "cookie_for_url", None)
-    has_cookie = bool(
-        callable(cookie_fn)
-        and (
-            cookie_fn(recovered_url)
-            or cookie_fn(url)
-            or cookie_fn("https://www.xiaohongshu.com/")
-        )
-    )
     has_proxy = bool(urllib.request.getproxies())
+    cookie_fn = getattr(client, "cookie_for_url", None)
 
-    attempts: List[Tuple[str, Dict[str, str], bool, bool]] = [
-        (recovered_url, {}, True, True),
-    ]
-    if url != recovered_url:
-        attempts.append((url, {}, True, True))
-    if alt_url:
-        attempts.append((alt_url, {}, True, True))
-        attempts.append((alt_url, XHS_DL_HEADERS, False, True))
-    if has_cookie:
-        attempts.append((recovered_url, {"Cookie": ""}, True, True))
-        attempts.append((recovered_url, {**XHS_DL_HEADERS, "Cookie": ""}, False, True))
-    if has_proxy:
-        attempts.append((recovered_url, {}, True, False))
-        attempts.append((recovered_url, XHS_DL_HEADERS, False, False))
+    if is_real_http:
+        probe_timeout = max(4, min(int(config.timeout), 8))
+        prefer_mobile, prefer_proxy = _get_preferred_route(cookie_fp)
+        if not has_proxy:
+            prefer_proxy = True
 
-    for target_url, headers, mobile, use_proxy in attempts:
-        res = _run_attempt(target_url, headers, mobile=mobile, use_proxy=use_proxy)
+        working_url = url
+        if _is_shortlink(url):
+            working_url, immediate_res = _resolve_shortlink_once(
+                url,
+                client,
+                config,
+                probe_timeout,
+                has_proxy=has_proxy,
+                prefer_proxy=prefer_proxy,
+            )
+            if immediate_res is not None:
+                return _cache_and_return(immediate_res, working_url)
+            resolved_id = _extract_note_id(working_url)
+            if use_cache and resolved_id:
+                cached = _get_cached_result(f"id:{resolved_id}", cookie_fp, config.save_live_photo_video)
+                if cached is not None:
+                    return cached
+
+        primary_hdrs = {} if prefer_mobile else XHS_DL_HEADERS
+        res = _run_attempt(working_url, primary_hdrs, mobile=prefer_mobile, use_proxy=prefer_proxy, timeout=probe_timeout)
+        if res is not None:
+            return _cache_and_return(res, working_url)
+
+        recovered_url = _recover_target_url(first_resp_url or working_url, working_url)
+        alt_url = _alt_route_url(recovered_url)
+        has_cookie = bool(
+            callable(cookie_fn)
+            and (
+                cookie_fn(recovered_url)
+                or cookie_fn(working_url)
+                or cookie_fn(url)
+                or cookie_fn("https://www.xiaohongshu.com/")
+            )
+        )
+
+        wave_a: List[Tuple[str, Dict[str, str], bool, bool]] = [
+            (recovered_url, XHS_DL_HEADERS if prefer_mobile else {}, not prefer_mobile, prefer_proxy),
+        ]
+        if working_url != recovered_url:
+            wave_a.append((working_url, {}, True, prefer_proxy))
+        if alt_url:
+            wave_a.append((alt_url, {}, True, prefer_proxy))
+            wave_a.append((alt_url, XHS_DL_HEADERS, False, prefer_proxy))
+        if has_cookie:
+            wave_a.append((recovered_url, {"Cookie": ""}, True, prefer_proxy))
+
+        wave_b: List[Tuple[str, Dict[str, str], bool, bool]] = []
+        if has_cookie:
+            wave_b.append((recovered_url, {**XHS_DL_HEADERS, "Cookie": ""}, False, prefer_proxy))
+        if has_proxy:
+            alt_proxy = not prefer_proxy
+            wave_b.append((recovered_url, {}, True, alt_proxy))
+            wave_b.append((recovered_url, XHS_DL_HEADERS, False, alt_proxy))
+            if alt_url:
+                wave_b.append((alt_url, {}, True, alt_proxy))
+            if has_cookie:
+                wave_b.append((recovered_url, {"Cookie": ""}, True, alt_proxy))
+
+        def _run_parallel_wave(batch: List[Tuple[str, Dict[str, str], bool, bool]]) -> Optional[ExtractResult]:
+            if not batch:
+                return None
+            q: queue.Queue = queue.Queue()
+            for target_u, hdrs, mob, use_px in batch:
+                def _worker(tu=target_u, hd=hdrs, mb=mob, up=use_px) -> None:
+                    found_item: Optional[ExtractResult] = None
+                    try:
+                        found_item = _run_attempt(tu, hd, mobile=mb, use_proxy=up, timeout=probe_timeout)
+                    except Exception:
+                        found_item = None
+                    finally:
+                        q.put((found_item, mb, up))
+
+                threading.Thread(target=_worker, daemon=True).start()
+
+            for _ in range(len(batch)):
+                found, mob, use_px = q.get()
+                if found is not None:
+                    _set_preferred_route(cookie_fp, mob, use_px)
+                    return found
+            return None
+
+        for wave in (wave_a, wave_b):
+            hit = _run_parallel_wave(wave)
+            if hit is not None:
+                return _cache_and_return(hit, recovered_url)
+        if working_url != url:
+            with _CACHE_LOCK:
+                _SHORTLINK_CACHE.pop(url, None)
+    else:
+        res = _run_attempt(url, XHS_DL_HEADERS, mobile=False, use_proxy=True)
         if res is not None:
             return res
 
+        recovered_url = _recover_target_url(first_resp_url, url)
+        alt_url = _alt_route_url(recovered_url)
+        has_cookie = bool(
+            callable(cookie_fn)
+            and (
+                cookie_fn(recovered_url)
+                or cookie_fn(url)
+                or cookie_fn("https://www.xiaohongshu.com/")
+            )
+        )
+
+        attempts: List[Tuple[str, Dict[str, str], bool, bool]] = [
+            (recovered_url, {}, True, True),
+        ]
+        if url != recovered_url:
+            attempts.append((url, {}, True, True))
+        if alt_url:
+            attempts.append((alt_url, {}, True, True))
+            attempts.append((alt_url, XHS_DL_HEADERS, False, True))
+        if has_cookie:
+            attempts.append((recovered_url, {"Cookie": ""}, True, True))
+            attempts.append((recovered_url, {**XHS_DL_HEADERS, "Cookie": ""}, False, True))
+        if has_proxy:
+            attempts.append((recovered_url, {}, True, False))
+            attempts.append((recovered_url, XHS_DL_HEADERS, False, False))
+
+        for target_url, headers, mobile, use_proxy in attempts:
+            res = _run_attempt(target_url, headers, mobile=mobile, use_proxy=use_proxy)
+            if res is not None:
+                return res
+
     if meta_fallback is not None:
-        return meta_fallback
+        return _cache_and_return(meta_fallback)
 
     if saw_block:
         raise ExtractionError("小红书页面被拦截或需要登录验证（若开启了代理/VPN 请尝试分流或直连，或在 config.json 配置有效 xhs_cookie 后重试）。")

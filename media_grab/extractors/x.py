@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 from ..config import Config
-from ..http_client import HttpClient
+from ..http_client import HttpClient, warm_urls
 from ..utils import dedupe_keep_order, normalize_http_url
 from . import ExtractResult, ExtractionError, MediaAsset
 
@@ -457,41 +457,17 @@ def _resolve_status_url(url: str, client: HttpClient, timeout: int) -> Tuple[str
 
 
 def prewarm(config: Optional[Config] = None) -> None:
-    """Warm DNS and TLS routes for X API and media CDNs in the background."""
-    hosts = (
-        "cdn.syndication.twimg.com",
-        "api.fxtwitter.com",
-        "api.vxtwitter.com",
-        "pbs.twimg.com",
-        "video.twimg.com",
+    """Warm DNS and Keep-Alive TLS connections for X API and media CDNs."""
+    warm_urls(
+        [
+            "https://cdn.syndication.twimg.com/",
+            "https://api.fxtwitter.com/",
+            "https://api.vxtwitter.com/",
+            "https://pbs.twimg.com/",
+            "https://video.twimg.com/",
+        ],
+        timeout=3.0,
     )
-
-    def _dns(h: str) -> None:
-        try:
-            socket.getaddrinfo(h, 443, type=socket.SOCK_STREAM)
-        except Exception:
-            pass
-
-    def _head(u: str) -> None:
-        try:
-            req = urllib.request.Request(
-                u,
-                headers={"User-Agent": "media-grab/1.0", "Accept": "application/json"},
-                method="HEAD",
-            )
-            with urllib.request.urlopen(req, timeout=2):
-                pass
-        except Exception:
-            pass
-
-    for h in hosts:
-        threading.Thread(target=_dns, args=(h,), daemon=True).start()
-    for u in (
-        "https://cdn.syndication.twimg.com/tweet-result?id=20&lang=en&token=1",
-        "https://api.vxtwitter.com/",
-        "https://api.fxtwitter.com/",
-    ):
-        threading.Thread(target=_head, args=(u,), daemon=True).start()
 
 
 def _video_quality_rank(res: ExtractResult) -> Tuple[int, int]:

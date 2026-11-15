@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
 from ..config import DEFAULT_CONFIG_DIR, Config
-from ..http_client import HttpClient
+from ..http_client import HttpClient, warm_urls
 from ..utils import dedupe_keep_order, extract_balanced_json, loads_relaxed_json, normalize_http_url
 from . import ExtractResult, ExtractionError, MediaAsset
 
@@ -441,7 +441,15 @@ def _get_anonymous_ttwid(
 
 
 def prewarm(config: Optional[Config] = None) -> None:
-    """Best-effort background warmup of anonymous ttwid cache before user submits a link."""
+    """Best-effort background warmup of anonymous ttwid cache and Douyin TLS routes."""
+    warm_urls(
+        [
+            "https://www.iesdouyin.com/",
+            "https://v.douyin.com/",
+            "https://aweme.snssdk.com/",
+        ],
+        timeout=3.0,
+    )
     _get_anonymous_ttwid(config or Config(), use_disk_cache=True)
 
 

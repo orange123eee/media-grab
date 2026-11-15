@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from . import android
 from .config import DEFAULT_CONFIG_DIR, Config, load_config
 from .extractors import ExtractResult, ExtractionError, MediaAsset, extract
-from .http_client import HttpClient, HttpError
+from .http_client import HttpClient, HttpError, close_idle_connections
 from .utils import dedupe_keep_order, extract_url, sanitize_filename
 
 APP_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
@@ -1603,13 +1603,42 @@ def _save_job_to_output(
     return saved, errors
 
 
+def _prewarm_extractors(config_dir: Optional[Path] = None) -> None:
+    cfg = load_config(config_dir)
+    try:
+        from .extractors.x import prewarm as _prewarm_x
+
+        _prewarm_x(cfg)
+    except Exception:
+        pass
+    try:
+        from .extractors.douyin import prewarm as _prewarm_douyin
+
+        _prewarm_douyin(cfg)
+    except Exception:
+        pass
+    try:
+        from .extractors.xiaohongshu import prewarm as _prewarm_xhs
+
+        _prewarm_xhs(cfg)
+    except Exception:
+        pass
+
+
 class WebAppState:
     """Shared server state holding job registry, config path, and activity lifecycle."""
 
-    def __init__(self, config_dir: Optional[Path] = None, can_shutdown: bool = False, hibernate_only: bool = False):
+    def __init__(
+        self,
+        config_dir: Optional[Path] = None,
+        can_shutdown: bool = False,
+        hibernate_only: bool = False,
+        prewarm_on_wake: bool = False,
+    ):
         self.config_dir = config_dir
         self.can_shutdown = can_shutdown
         self.hibernate_only = hibernate_only
+        self.prewarm_on_wake = prewarm_on_wake
         self.hibernated = False
         self.store = JobStore()
         self._lock = threading.Lock()
@@ -1617,14 +1646,30 @@ class WebAppState:
         self.active_requests = 0
         self.leave_deadline: Optional[float] = None
         self.last_activity = time.monotonic()
+        self._last_prewarm = 0.0
         self.server: Optional[ThreadingHTTPServer] = None
 
+    def _maybe_prewarm_on_wake(self) -> None:
+        if not self.prewarm_on_wake:
+            return
+        now = time.monotonic()
+        with self._lock:
+            if (now - self._last_prewarm) < 30.0:
+                return
+            self._last_prewarm = now
+        threading.Thread(target=_prewarm_extractors, args=(self.config_dir,), daemon=True).start()
+
     def touch(self) -> None:
+        woke = False
         with self._lock:
             self.last_activity = time.monotonic()
             self.leave_deadline = None
-            self.hibernated = False
+            if self.hibernated:
+                woke = True
+                self.hibernated = False
             self._wake_event.set()
+        if woke:
+            self._maybe_prewarm_on_wake()
 
     def mark_leave(self, delay_sec: float) -> None:
         with self._lock:
@@ -1639,6 +1684,7 @@ class WebAppState:
             self.leave_deadline = None
             self.hibernated = True
             self._wake_event.clear()
+        close_idle_connections()
         gc.collect()
 
     @contextmanager
@@ -2108,27 +2154,14 @@ def serve(
 ) -> None:
     """Start the local web UI server."""
     can_stop = allow_shutdown or idle_timeout > 0 or host == "127.0.0.1"
-    state = WebAppState(can_shutdown=can_stop, hibernate_only=hibernate_on_idle)
+    state = WebAppState(can_shutdown=can_stop, hibernate_only=hibernate_on_idle, prewarm_on_wake=True)
     srv = ReusableThreadingHTTPServer((host, port), make_handler(state))
     state.server = srv
     android.wake_lock()
 
-    def _prewarm_extractors() -> None:
-        cfg = load_config(state.config_dir)
-        try:
-            from .extractors.x import prewarm as _prewarm_x
-
-            _prewarm_x(cfg)
-        except Exception:
-            pass
-        try:
-            from .extractors.douyin import prewarm as _prewarm_douyin
-
-            _prewarm_douyin(cfg)
-        except Exception:
-            pass
-
-    threading.Thread(target=_prewarm_extractors, daemon=True).start()
+    with state._lock:
+        state._last_prewarm = time.monotonic()
+    threading.Thread(target=_prewarm_extractors, args=(state.config_dir,), daemon=True).start()
 
     if idle_timeout > 0:
         def _watchdog() -> None:

@@ -1,8 +1,10 @@
 """Offline unit tests for media_grab parsing, URL extraction, cookies, and download validation."""
 
+import http.server
 import io
 import json
 import tempfile
+import threading
 import time
 import unittest
 import urllib.request
@@ -21,8 +23,9 @@ from media_grab.extractors.x import (
     parse_syndication_tweet,
     parse_vxtwitter_tweet,
 )
+from media_grab.extractors import xiaohongshu as xhs_mod
 from media_grab.extractors.xiaohongshu import _parse_xhs_state, extract_xiaohongshu, parse_xhs_state
-from media_grab.http_client import HttpClient, HttpError, HttpResponse
+from media_grab.http_client import ConnectionPool, HttpClient, HttpError, HttpResponse
 from media_grab.utils import (
     detect_platform,
     extract_balanced_json,
@@ -623,6 +626,109 @@ class XiaohongshuExtractorTests(unittest.TestCase):
         self.assertEqual(res.title, "匿名恢复")
         self.assertEqual(res.assets[0].urls[0], "https://sns-img-hw.xhscdn.com/notes_pre_post/anon_img?imageView2/2/w/format/png")
 
+    @staticmethod
+    def _clear_xhs_fast_caches() -> None:
+        with xhs_mod._CACHE_LOCK:
+            xhs_mod._RESULT_CACHE.clear()
+            xhs_mod._SHORTLINK_CACHE.clear()
+            xhs_mod._PREFERRED_ROUTE.clear()
+
+    @staticmethod
+    def _make_note_html(note_id: str, title: str, img_url: str) -> bytes:
+        state = json.dumps(
+            {
+                "note": {
+                    "noteDetailMap": {
+                        note_id: {
+                            "note": {
+                                "noteId": note_id,
+                                "type": "normal",
+                                "title": title,
+                                "desc": "",
+                                "user": {"nickname": "测试作者"},
+                                "imageList": [{"urlDefault": img_url, "livePhoto": False}],
+                            }
+                        }
+                    }
+                }
+            }
+        )
+        return f"<script>window.__INITIAL_STATE__={state}</script>".encode("utf-8")
+
+    def test_shortlink_and_result_cache_with_http_client(self):
+        self._clear_xhs_fast_caches()
+        self.addCleanup(self._clear_xhs_fast_caches)
+
+        short_url = "https://xhslink.cn/o/fast1"
+        note_id = "666111222333444555666777"
+        resolved_url = f"https://www.xiaohongshu.com/discovery/item/{note_id}?xsec_token=tok1&xsec_source=pc_feed"
+        img_url = "https://sns-img-hw.xhscdn.com/notes_pre_post/fast_cached?imageView2/2/w/format/png"
+        calls = []
+
+        def fake_get(url, **kwargs):
+            calls.append((url, bool(kwargs.get("mobile", False)), kwargs.get("follow_redirects", True)))
+            if "xhslink.cn" in url:
+                return HttpResponse(302, url, {"location": resolved_url}, b"")
+            return HttpResponse(200, url, {}, self._make_note_html(note_id, "快路径笔记", img_url))
+
+        cfg = Config(timeout=10)
+        client = HttpClient(cfg)
+        with patch.object(client, "get", side_effect=fake_get):
+            res1 = extract_xiaohongshu(short_url, client, cfg)
+            self.assertEqual(res1.title, "快路径笔记")
+            self.assertEqual(len(calls), 2)
+            self.assertFalse(calls[0][2])
+
+            res2 = extract_xiaohongshu(short_url, client, cfg)
+            self.assertEqual(res2.title, "快路径笔记")
+            self.assertEqual(len(calls), 2)
+
+            with xhs_mod._CACHE_LOCK:
+                xhs_mod._RESULT_CACHE.clear()
+            res3 = extract_xiaohongshu(short_url, client, cfg)
+            self.assertEqual(res3.title, "快路径笔记")
+            self.assertEqual(len(calls), 3)
+            self.assertNotIn("xhslink.cn", calls[-1][0])
+
+    def test_parallel_fallback_wave_and_preferred_route_memory(self):
+        self._clear_xhs_fast_caches()
+        self.addCleanup(self._clear_xhs_fast_caches)
+
+        note1 = "aaa111222333444555666777"
+        note2 = "bbb111222333444555666777"
+        url1 = f"https://www.xiaohongshu.com/explore/{note1}?xsec_token=tok2&xsec_source=pc_feed"
+        url2 = f"https://www.xiaohongshu.com/explore/{note2}?xsec_token=tok3&xsec_source=pc_feed"
+        calls = []
+        calls_lock = threading.Lock()
+
+        def fake_get(url, **kwargs):
+            mob = bool(kwargs.get("mobile", False))
+            with calls_lock:
+                calls.append((url, mob))
+            if not mob:
+                return HttpResponse(200, "https://www.xiaohongshu.com/website-login/error", {}, b"<html>login</html>")
+            nid = note2 if note2 in url else note1
+            img = f"https://sns-img-hw.xhscdn.com/notes_pre_post/{nid}?imageView2/2/w/format/png"
+            return HttpResponse(200, url, {}, self._make_note_html(nid, f"标题-{nid[:6]}", img))
+
+        cfg = Config(timeout=10)
+        client = HttpClient(cfg)
+        with patch.object(client, "get", side_effect=fake_get):
+            res1 = extract_xiaohongshu(url1, client, cfg)
+            self.assertEqual(res1.title, f"标题-{note1[:6]}")
+            note1_calls = [c for c in calls if note1 in c[0]]
+            self.assertGreaterEqual(len(note1_calls), 2)
+            self.assertFalse(note1_calls[0][1])
+
+            with xhs_mod._CACHE_LOCK:
+                xhs_mod._RESULT_CACHE.clear()
+
+            res2 = extract_xiaohongshu(url2, client, cfg)
+            self.assertEqual(res2.title, f"标题-{note2[:6]}")
+            note2_calls = [c for c in calls if note2 in c[0]]
+            self.assertEqual(len(note2_calls), 1)
+            self.assertTrue(note2_calls[0][1])
+
 
 class XExtractorTests(unittest.TestCase):
     def test_parse_fxtwitter_photos_and_highest_bitrate_video(self):
@@ -1093,6 +1199,104 @@ class ConfigAndDownloadTests(unittest.TestCase):
 
         self.assertTrue(captured_handlers)
         self.assertTrue(any(isinstance(h, urllib.request.ProxyHandler) and not h.proxies for h in captured_handlers[0]))
+
+    def test_keepalive_pool_reuse_truncated_discard_and_stale_retry(self):
+        state = {"tcp_conns": 0, "req_count": 0, "drop_once": False}
+        lock = threading.Lock()
+        png_bytes = b"\x89PNG\r\n\x1a\n" + (b"P" * 128)
+        html_trap = b"<html><body>blocked</body></html>" + (b"x" * 160)
+
+        class _KeepAliveHandler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, fmt, *args):
+                return
+
+            def setup(self):
+                with lock:
+                    state["tcp_conns"] += 1
+                super().setup()
+
+            def do_GET(self):
+                with lock:
+                    state["req_count"] += 1
+                if self.path == "/stale_once":
+                    with lock:
+                        should_drop = state["drop_once"]
+                        if should_drop:
+                            state["drop_once"] = False
+                    if should_drop:
+                        self.close_connection = True
+                        return
+                if self.path == "/html_trap":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(html_trap)))
+                    self.end_headers()
+                    self.wfile.write(html_trap)
+                    self.wfile.flush()
+                    return
+                if self.path.startswith("/img"):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(png_bytes)))
+                    self.end_headers()
+                    self.wfile.write(png_bytes)
+                    self.wfile.flush()
+                    return
+                body = b"ok-keepalive"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                self.wfile.flush()
+
+        class _Server(http.server.ThreadingHTTPServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        server = _Server(("127.0.0.1", 0), _KeepAliveHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        pool = ConnectionPool(max_per_key=4, max_total=8, idle_ttl=30.0)
+        self.addCleanup(pool.close_all)
+        client = HttpClient(Config(timeout=5), pool=pool)
+        pool_key = ("http", f"127.0.0.1:{port}", "", None, "")
+        base = f"http://127.0.0.1:{port}"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            resp1 = client.get(f"{base}/page", use_proxy=False)
+            self.assertEqual(resp1.body, b"ok-keepalive")
+            self.assertTrue(pool.has_idle(pool_key))
+
+            p1 = client.download_candidates([f"{base}/img1.png"], dest, "img1", ".png", "image")
+            p2 = client.download_candidates([f"{base}/img2.png"], dest, "img2", ".png", "image")
+            self.assertTrue(p1.exists() and p2.exists())
+            self.assertEqual(state["tcp_conns"], 1)
+            self.assertEqual(state["req_count"], 3)
+
+        # Unread/aborted response body (text/html rejected before EOF) must NOT poison the pool.
+        with self.assertRaises(HttpError):
+            client.open_media_candidates([f"{base}/html_trap"], ".png", "image")
+        self.assertFalse(pool.has_idle(pool_key))
+
+        # Re-establish one clean idle connection, then simulate server dropping socket mid-request.
+        resp2 = client.get(f"{base}/page", use_proxy=False)
+        self.assertEqual(resp2.body, b"ok-keepalive")
+        self.assertTrue(pool.has_idle(pool_key))
+        conns_before_stale = state["tcp_conns"]
+
+        with lock:
+            state["drop_once"] = True
+        resp3 = client.get(f"{base}/stale_once", use_proxy=False)
+        self.assertEqual(resp3.body, b"ok-keepalive")
+        self.assertGreater(state["tcp_conns"], conns_before_stale)
 
 
 if __name__ == "__main__":
