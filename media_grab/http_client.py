@@ -126,15 +126,17 @@ class HttpClient:
         headers: Optional[Dict[str, str]] = None,
         mobile: bool = False,
         follow_redirects: bool = True,
+        timeout: Optional[int] = None,
     ) -> HttpResponse:
         req = urllib.request.Request(url, headers=self._build_headers(url, headers, mobile), method="GET")
         handlers = [urllib.request.HTTPSHandler(context=self._ssl_ctx)]
         if not follow_redirects:
             handlers.append(_NoRedirect())
         opener = urllib.request.build_opener(*handlers)
+        req_timeout = self.config.timeout if timeout is None else max(1, int(timeout))
 
         try:
-            with opener.open(req, timeout=self.config.timeout) as resp:
+            with opener.open(req, timeout=req_timeout) as resp:
                 hdrs = {k.lower(): v for k, v in resp.headers.items()}
                 body = _decompress(resp.read(), hdrs.get("content-encoding", ""))
                 return HttpResponse(status=resp.status, url=resp.geturl(), headers=hdrs, body=body)
@@ -156,10 +158,11 @@ class HttpClient:
         range_header: Optional[str] = None,
     ) -> MediaStream:
         """Open first candidate URL returning valid media bytes (rejects HTML/JSON error pages)."""
+        cand_list = [c for c in urls if c]
         last_err: Optional[Exception] = None
-        for cand in urls:
-            if not cand:
-                continue
+        for idx, cand in enumerate(cand_list):
+            is_last = idx == len(cand_list) - 1
+            cand_timeout = self.config.timeout if is_last else min(self.config.timeout, 6)
             try:
                 return self._open_one(
                     cand,
@@ -168,6 +171,7 @@ class HttpClient:
                     headers=headers,
                     mobile=mobile,
                     range_header=range_header,
+                    timeout=cand_timeout,
                 )
             except urllib.error.HTTPError as e:
                 if e.code == 403 and headers and any(k.lower() == "referer" for k in headers):
@@ -180,6 +184,7 @@ class HttpClient:
                             headers=stripped,
                             mobile=mobile,
                             range_header=range_header,
+                            timeout=cand_timeout,
                         )
                     except Exception as retry_err:
                         last_err = retry_err
@@ -199,6 +204,7 @@ class HttpClient:
         headers: Optional[Dict[str, str]] = None,
         mobile: bool = False,
         range_header: Optional[str] = None,
+        timeout: Optional[int] = None,
     ) -> MediaStream:
         req_headers = self._build_headers(url, headers, mobile)
         req_headers["Accept-Encoding"] = "identity"
@@ -207,7 +213,7 @@ class HttpClient:
 
         req = urllib.request.Request(url, headers=req_headers, method="GET")
         opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=self._ssl_ctx))
-        resp = opener.open(req, timeout=self.config.timeout)
+        resp = opener.open(req, timeout=self.config.timeout if timeout is None else max(1, int(timeout)))
         try:
             status = int(getattr(resp, "status", 200) or 200)
             ct = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()

@@ -47,5 +47,7 @@ def extract(url: str, client: HttpClient, config: Config) -> ExtractResult:
 
         return extract_xiaohongshu(url, client, config)
     if platform == "x":
-        raise ExtractionError("X (Twitter) 提取将在下一阶段接入，目前优先支持抖音和小红书。")
+        from .x import extract_x
+
+        return extract_x(url, client, config)
     raise ExtractionError(f"暂不支持该链接所属平台: {url}")

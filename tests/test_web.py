@@ -263,19 +263,28 @@ class WebServerTests(unittest.TestCase):
         with socket.create_connection(("127.0.0.1", self.port), timeout=2):
             pass
 
-        st, _, raw = self._req("/api/config")
+        st, hdrs, raw = self._req("/api/config")
         self.assertEqual(st, 200)
+        self.assertEqual(hdrs.get("Connection", "").lower(), "close")
         self.assertIn("xhs_cookie_set", json.loads(raw.decode("utf-8")))
+
+        hst, hhdrs, _ = self._req("/api/heartbeat", method="POST")
+        self.assertEqual(hst, 200)
+        self.assertEqual(hhdrs.get("Connection", "").lower(), "close")
 
         _, _, idx_raw = self._req("/")
         idx_html = idx_raw.decode("utf-8")
         self.assertIn("scheduleReconnect", idx_html)
         self.assertIn("pageshow", idx_html)
         self.assertIn("cache: 'no-store'", idx_html)
+        self.assertIn(".badge.x", idx_html)
+        self.assertIn("decoding=\"async\"", idx_html)
 
         _, _, sw_raw = self._req("/sw.js")
         sw_text = sw_raw.decode("utf-8")
+        self.assertIn("media-grab-shell-v5", sw_text)
         self.assertIn("SW_OFFLINE_HTML", sw_text)
+        self.assertIn(".catch(() => null)", sw_text)
         self.assertNotIn("fetch(req,", sw_text)
 
         start_sh = Path(__file__).resolve().parent.parent / "bin" / "start-web.sh"
@@ -284,6 +293,65 @@ class WebServerTests(unittest.TestCase):
         sh_text = sh_bytes.decode("utf-8")
         self.assertNotIn(r"media_grab\.\(", sh_text)
         self.assertIn("stop_existing", sh_text)
+        self.assertIn("ensure_wake_lock", sh_text)
+
+    def test_thumb_cache_and_winning_host_promotion(self):
+        fake_result = ExtractResult(
+            platform="xiaohongshu",
+            item_id="fast99",
+            title="快图测试",
+            author="博主",
+            assets=[
+                MediaAsset(
+                    kind="image",
+                    urls=["https://slow.example/full1.png", "https://fast.example/full1.png"],
+                    default_ext=".png",
+                    thumb_urls=["https://slow-th.example/1.webp", "https://fast-th.example/1.webp"],
+                ),
+                MediaAsset(
+                    kind="image",
+                    urls=["https://slow.example/full2.png", "https://fast.example/full2.png"],
+                    default_ext=".png",
+                    thumb_urls=["https://slow-th.example/2.webp", "https://fast-th.example/2.webp"],
+                ),
+            ],
+        )
+        webp1 = b"RIFF1234WEBP" + b"A" * 1024
+        webp2 = b"RIFF1234WEBP" + b"B" * 1024
+        opened_urls = []
+
+        class FakeOpener:
+            def open(self, req, timeout=10):
+                u = req.full_url
+                opened_urls.append(u)
+                if "slow" in u:
+                    return _FakeRawResp("text/html", b"<html>blocked</html>")
+                if "1.webp" in u:
+                    return _FakeRawResp("image/webp", webp1)
+                return _FakeRawResp("image/webp", webp2)
+
+        with patch("media_grab.web.extract", return_value=fake_result):
+            st, _, raw = self._req("/api/extract", method="POST", body={"input": "http://xhslink.com/a/fast"})
+        self.assertEqual(st, 200)
+        assets = json.loads(raw.decode("utf-8"))["assets"]
+
+        with patch("urllib.request.build_opener", return_value=FakeOpener()):
+            st1, _, b1 = self._req(assets[0]["thumb_url"])
+            self.assertEqual(st1, 200)
+            self.assertEqual(b1, webp1)
+            calls_after_first = len(opened_urls)
+
+            # Second request for the same thumbnail must be served directly from RAM cache.
+            st1_cached, _, b1_cached = self._req(assets[0]["thumb_url"])
+            self.assertEqual(st1_cached, 200)
+            self.assertEqual(b1_cached, webp1)
+            self.assertEqual(len(opened_urls), calls_after_first)
+
+            # Subsequent asset in the same gallery must promote fast-th.example first without hitting slow-th.example.
+            st2, _, b2 = self._req(assets[1]["thumb_url"])
+            self.assertEqual(st2, 200)
+            self.assertEqual(b2, webp2)
+            self.assertEqual(opened_urls[-1], "https://fast-th.example/2.webp")
 
 
 class OnDemandGateTests(unittest.TestCase):

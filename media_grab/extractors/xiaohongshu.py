@@ -121,7 +121,7 @@ def _collect_image_tokens(img: Dict[str, Any], raw_urls: List[str]) -> List[str]
 
 
 def _build_image_candidates(img: Dict[str, Any]) -> List[str]:
-    """Generate candidate URLs prioritizing watermark-free original PNG/JPG before default CDN links."""
+    """Generate candidate URLs prioritizing fast watermark-free PNG before slower origin/default links."""
     raw_urls = _collect_raw_image_urls(img, prefer_preview=False)
     tokens = _collect_image_tokens(img, raw_urls)
 
@@ -129,9 +129,6 @@ def _build_image_candidates(img: Dict[str, Any]) -> List[str]:
     primary = str(img.get("fileId") or img.get("traceId") or "").strip()
     for token in tokens:
         candidates.append(f"https://sns-img-hw.xhscdn.com/{token}?imageView2/2/w/format/png")
-        candidates.append(f"https://ci.xiaohongshu.com/{token}?imageView2/2/w/format/png")
-        if token == primary:
-            candidates.append(f"https://ci.xiaohongshu.com/{token}")
 
     for u in raw_urls:
         # Try removing watermark suffix (!nd_dft_wlteh_...) when path has no signed timestamp prefix
@@ -142,20 +139,26 @@ def _build_image_candidates(img: Dict[str, Any]) -> List[str]:
                 if "/spectrum/" not in base:
                     candidates.append(f"{base}?imageView2/2/w/format/png")
 
+    for token in tokens:
+        candidates.append(f"https://ci.xiaohongshu.com/{token}?imageView2/2/w/format/png")
+        if token == primary:
+            candidates.append(f"https://ci.xiaohongshu.com/{token}")
+
     candidates.extend(raw_urls)
     return dedupe_keep_order(candidates)
 
 
 def _build_thumb_candidates(img: Dict[str, Any]) -> List[str]:
-    """Generate fast watermark-free 720w WebP preview URLs for quick gallery loading."""
+    """Generate fast 720w WebP preview URLs, preferring edge CDNs before origin ci.xiaohongshu.com."""
     raw_urls = _collect_raw_image_urls(img, prefer_preview=True)
     tokens = _collect_image_tokens(img, raw_urls)
 
     thumbs: List[str] = []
     for token in tokens:
         thumbs.append(f"https://sns-img-hw.xhscdn.com/{token}?imageView2/2/w/720/format/webp")
-        thumbs.append(f"https://ci.xiaohongshu.com/{token}?imageView2/2/w/720/format/webp")
     thumbs.extend(raw_urls)
+    for token in tokens:
+        thumbs.append(f"https://ci.xiaohongshu.com/{token}?imageView2/2/w/720/format/webp")
     return dedupe_keep_order(thumbs)
 
 
@@ -170,6 +173,7 @@ def parse_xhs_state(state: Dict[str, Any], preferred_id: str, config: Config) ->
     author = str((note.get("user") or {}).get("nickname") or "").strip()
 
     assets: List[MediaAsset] = []
+    image_list = note.get("imageList")
     video_obj = note.get("video")
     if isinstance(video_obj, dict) and video_obj:
         stream = (video_obj.get("media") or {}).get("stream") or {}
@@ -178,6 +182,9 @@ def parse_xhs_state(state: Dict[str, Any], preferred_id: str, config: Config) ->
         if origin_key:
             v_urls = dedupe_keep_order(v_urls + [f"https://sns-video-bd.xhscdn.com/{origin_key}"])
         if v_urls:
+            cover_thumbs: List[str] = []
+            if isinstance(image_list, list) and image_list and isinstance(image_list[0], dict):
+                cover_thumbs = _build_thumb_candidates(image_list[0])
             assets.append(
                 MediaAsset(
                     kind="video",
@@ -185,11 +192,11 @@ def parse_xhs_state(state: Dict[str, Any], preferred_id: str, config: Config) ->
                     default_ext=".mp4",
                     headers=XHS_DL_HEADERS,
                     mobile=False,
+                    thumb_urls=cover_thumbs,
                 )
             )
 
     # Extract images & live photos for image notes, or if video extraction yielded nothing.
-    image_list = note.get("imageList")
     if (not assets or note.get("type") != "video") and isinstance(image_list, list):
         for img in image_list:
             if not isinstance(img, dict):

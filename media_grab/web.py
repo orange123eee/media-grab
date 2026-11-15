@@ -47,7 +47,7 @@ MANIFEST_JSON = json.dumps(
     ensure_ascii=False,
 )
 
-SW_JS = """const CACHE_NAME = 'media-grab-shell-v4';
+SW_JS = """const CACHE_NAME = 'media-grab-shell-v5';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg'];
 const SW_OFFLINE_HTML = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="background:#0b0e14;color:#eef2f8;font-family:sans-serif;padding:24px;line-height:1.6"><h3>本地 Termux 服务被系统暂停</h3><p style="color:#9aa7bd">正在自动检测并恢复连接；若 3 秒后仍未跳转，请点下方按钮唤起 Termux 后切回本页（建议在系统设置将 Termux 省电策略设为「无限制」）：</p><p><a href="intent://#Intent;package=com.termux;end" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;border-radius:10px;text-decoration:none">⚡ 一键唤醒 Termux 服务</a> <button onclick="location.replace(\\'/\\')" style="padding:12px 16px;background:#1e2636;color:#eef2f8;border:1px solid #334155;border-radius:10px;margin-left:8px">立即刷新</button></p><script>function p(){fetch("/api/config",{cache:"no-store"}).then(function(r){if(r.ok)location.replace("/")}).catch(function(){})}p();setInterval(p,1200);document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible")p()})</script></body>';
 
@@ -90,8 +90,8 @@ self.addEventListener('fetch', (event) => {
 
   if (req.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html') {
     event.respondWith(
-      caches.match('/').then((cached) => {
-        const timeoutMs = cached ? 850 : 2500;
+      caches.match('/').catch(() => null).then((cached) => {
+        const timeoutMs = cached ? 900 : 3000;
         return fetchWithTimeout('/', timeoutMs)
           .then((res) => {
             if (res && res.ok) {
@@ -112,7 +112,7 @@ self.addEventListener('fetch', (event) => {
 
   if (url.pathname === '/manifest.json' || url.pathname === '/icon.svg') {
     event.respondWith(
-      fetchWithTimeout(url.pathname, 850)
+      fetchWithTimeout(url.pathname, 900)
         .then((res) => {
           if (res && res.ok) {
             const copy = res.clone();
@@ -120,7 +120,7 @@ self.addEventListener('fetch', (event) => {
           }
           return res;
         })
-        .catch(() => caches.match(url.pathname))
+        .catch(() => caches.match(url.pathname).catch(() => null))
     );
   }
 });
@@ -242,6 +242,7 @@ INDEX_HTML = r"""<!doctype html>
   .badge { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--accent-soft); color: #8ac4ff; margin-right: 6px; vertical-align: 1px; }
   .badge.xhs { background: rgba(255, 36, 66, .18); color: #ff6b81; }
   .badge.dy { background: linear-gradient(135deg, rgba(37, 244, 238, .18), rgba(254, 44, 85, .18)); color: #6ef3ef; }
+  .badge.x { background: rgba(238, 242, 248, .14); color: #e2e8f0; border: 1px solid rgba(255,255,255,.16); }
   .title { font-weight: 600; font-size: 15.5px; word-break: break-word; }
   .author { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
   .acts { display: flex; gap: 8px; margin: 10px 0 14px; flex-wrap: wrap; }
@@ -337,7 +338,7 @@ INDEX_HTML = r"""<!doctype html>
   </div>
 
   <div class="card">
-    <textarea id="inp" placeholder="直接粘贴抖音 / 小红书分享文案或链接（不用手动删掉里面的中文，系统会自动识别）"></textarea>
+    <textarea id="inp" placeholder="直接粘贴抖音 / 小红书 / X (Twitter) 分享文案或链接（不用手动删掉里面的中文，系统会自动识别）"></textarea>
     <div class="detect" id="detectBar">
       <span class="detect-txt" id="detectTxt"></span>
       <button type="button" class="detect-btn" id="trimUrlBtn" style="display:none">仅留纯链接</button>
@@ -459,7 +460,7 @@ function markOnline() {
   setOnline(true, '按需服务就绪 · 关页自动停止');
 }
 
-function scheduleReconnect(delayMs = 1200) {
+function scheduleReconnect(delayMs = 900) {
   if (reconnectTimer || serverOnline || document.visibilityState !== 'visible') return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
@@ -479,11 +480,19 @@ function showErr(msg) {
 
 function setHint(msg) { $('hint').textContent = msg || ''; }
 
+function platName(p) {
+  return p === 'douyin' ? '抖音' : (p === 'xiaohongshu' ? '小红书' : (p === 'x' ? 'X' : p));
+}
+
+function platBadge(p) {
+  return p === 'xiaohongshu' ? 'xhs' : (p === 'douyin' ? 'dy' : (p === 'x' ? 'x' : ''));
+}
+
 function clientExtractUrl(text) {
   const m = String(text || '').match(/https?:\/\/[A-Za-z0-9\-._~:\/?#[\]@!$&'()*+,;=%]+/g);
   if (!m) return null;
   const cleaned = m.map(u => u.replace(/[.,;:!?)"']+$/, '')).filter(Boolean);
-  const prio = ['douyin.com', 'iesdouyin.com', 'xhslink.com', 'xhslink.cn', 'xiaohongshu.com', 'x.com', 'twitter.com'];
+  const prio = ['douyin.com', 'iesdouyin.com', 'xhslink.com', 'xhslink.cn', 'xiaohongshu.com', 'x.com', 'twitter.com', 'fxtwitter.com', 'vxtwitter.com', 'fixupx.com', 't.co'];
   for (const u of cleaned) {
     try {
       const h = new URL(u).hostname.toLowerCase();
@@ -514,7 +523,7 @@ function updateDetectBar() {
   let plat = '链接';
   if (found.host.includes('douyin')) plat = '抖音';
   else if (found.host.includes('xhs') || found.host.includes('xiaohongshu')) plat = '小红书';
-  else if (found.host === 'x.com' || found.host.endsWith('.x.com') || found.host.includes('twitter') || found.host === 't.co') plat = 'X';
+  else if (found.host === 'x.com' || found.host.endsWith('.x.com') || found.host.includes('twitter') || found.host.includes('fixupx') || found.host === 't.co') plat = 'X';
   bar.className = 'detect show';
   const hasExtra = raw !== found.url;
   txt.textContent = (hasExtra ? '✓ 已自动忽略文案，识别到【' : '✓ 已识别【') + plat + '】' + found.url;
@@ -546,7 +555,8 @@ async function fetchJsonWithRetry(url, options, timeoutMs = 22000, retries = 1, 
         }
       }
       if (attempt < retries) {
-        await new Promise(resolve => setTimeout(resolve, retryOnAbort ? 140 : 250));
+        const waitMs = retryOnAbort ? (attempt === 0 ? 180 : 420) : 250;
+        await new Promise(resolve => setTimeout(resolve, waitMs));
       }
     } finally {
       clearTimeout(tid);
@@ -558,7 +568,7 @@ async function fetchJsonWithRetry(url, options, timeoutMs = 22000, retries = 1, 
 function saveHistory(d, inputUrl) {
   try {
     const list = JSON.parse(localStorage.getItem(HIST_KEY) || '[]').filter(x => x.url !== inputUrl);
-    const plat = d.platform === 'douyin' ? '抖音' : (d.platform === 'xiaohongshu' ? '小红书' : d.platform);
+    const plat = platName(d.platform);
     const now = new Date();
     const hhmm = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
     list.unshift({ platform: d.platform, platName: plat, title: d.title || inputUrl, url: inputUrl, time: hhmm });
@@ -574,9 +584,9 @@ function renderHistory() {
     const box = $('histList');
     if (!list.length) { card.style.display = 'none'; box.innerHTML = ''; return; }
     box.innerHTML = list.map((it, i) => {
-      const cls = it.platform === 'xiaohongshu' ? 'xhs' : (it.platform === 'douyin' ? 'dy' : '');
+      const cls = platBadge(it.platform);
       return '<button type="button" class="hist-row" data-idx="' + i + '">' +
-        '<span class="badge ' + cls + '">' + esc(it.platName || it.platform) + '</span>' +
+        '<span class="badge ' + cls + '">' + esc(it.platName || platName(it.platform)) + '</span>' +
         '<span class="hist-title">' + esc(it.title) + '</span>' +
         '<span class="hist-time">' + esc(it.time || '') + '</span>' +
         '</button>';
@@ -603,7 +613,7 @@ $('clrHistBtn').addEventListener('click', () => {
 
 async function runExtract(text) {
   const val = (text != null ? text : $('inp').value).trim();
-  if (!val) { showErr('请先粘贴抖音或小红书分享链接'); return; }
+  if (!val) { showErr('请先粘贴抖音、小红书或 X 分享链接'); return; }
   if (busy) return;
   busy = true;
   showErr('');
@@ -622,7 +632,7 @@ async function runExtract(text) {
   try {
     if (!serverOnline) {
       try {
-        await fetchJsonWithRetry('/api/heartbeat', { method: 'POST' }, 1600, 1, true);
+        await fetchJsonWithRetry('/api/heartbeat', { method: 'POST' }, 1800, 2, true);
         markOnline();
       } catch (hbErr) {
         showWakeBanner(true);
@@ -699,8 +709,8 @@ function showLightbox(idx) {
 
 function renderResult(d) {
   const card = $('resCard');
-  const plat = d.platform === 'douyin' ? '抖音' : (d.platform === 'xiaohongshu' ? '小红书' : d.platform);
-  const badgeCls = d.platform === 'xiaohongshu' ? 'xhs' : (d.platform === 'douyin' ? 'dy' : '');
+  const plat = platName(d.platform);
+  const badgeCls = platBadge(d.platform);
   const videos = d.assets.filter(a => a.kind === 'video');
   const images = d.assets.filter(a => a.kind === 'image');
   const lives = d.assets.filter(a => a.kind === 'live_video');
@@ -736,9 +746,10 @@ function renderResult(d) {
     images.forEach((im, idx) => {
       const lv = liveMap.get(im.index);
       const thumbSrc = im.thumb_url || im.preview_url;
+      const loadMode = idx < 6 ? 'eager' : 'lazy';
       html += '<div class="item">' +
         '<div class="thumb" data-idx="' + idx + '">' +
-        '<img loading="lazy" src="' + esc(thumbSrc) + '" onload="this.classList.add(\'loaded\')" onerror="this.classList.add(\'loaded\')" alt="">' +
+        '<img loading="' + loadMode + '" decoding="async" src="' + esc(thumbSrc) + '" onload="this.classList.add(\'loaded\')" onerror="this.classList.add(\'loaded\')" alt="">' +
         '<span class="tag">#' + (idx + 1) + '</span></div>' +
         '<div class="item-ft">' +
         '<a class="btn pri" href="' + esc(im.download_url) + '">保存无损原图</a>' +
@@ -818,7 +829,7 @@ $('pasteBtn').addEventListener('click', async () => {
         runExtract(txt.trim());
         return;
       }
-      setHint('剪贴板是空的，请先在抖音/小红书复制链接。');
+      setHint('剪贴板是空的，请先在抖音、小红书或 X 复制链接。');
       showToast('剪贴板是空的');
       return;
     }
@@ -838,7 +849,7 @@ async function refreshCfgStatus(fast = false) {
     const { res: r, data: c } = await fetchJsonWithRetry(
       '/api/config',
       {},
-      fast ? 1600 : 3500,
+      fast ? 1800 : 3500,
       fast ? 2 : 1,
       true
     );
@@ -963,6 +974,9 @@ SW_JS_BYTES = SW_JS.encode("utf-8")
 INDEX_HTML_BYTES = INDEX_HTML.encode("utf-8")
 
 
+_MAX_THUMB_CACHE_BYTES = 512 * 1024
+
+
 @dataclass
 class StoredAsset:
     asset_id: str
@@ -970,8 +984,13 @@ class StoredAsset:
     pair_index: int
     stem: str
     asset: MediaAsset
+    platform: str = ""
     resolved_url: Optional[str] = None
     resolved_ext: Optional[str] = None
+    resolved_thumb_url: Optional[str] = None
+    thumb_bytes: Optional[bytes] = None
+    thumb_content_type: Optional[str] = None
+    thumb_ext: Optional[str] = None
 
 
 @dataclass
@@ -989,6 +1008,20 @@ class JobStore:
         self._lock = threading.Lock()
         self._jobs: OrderedDict[str, StoredJob] = OrderedDict()
         self._assets: Dict[str, StoredAsset] = {}
+        self._preferred_hosts: Dict[Tuple[str, bool], str] = {}
+        self._thumb_inflight: Dict[str, threading.Event] = {}
+
+    @staticmethod
+    def _prioritize_urls(urls: List[str], exact: Optional[str], pref_host: Optional[str]) -> List[str]:
+        ordered: List[str] = []
+        if exact:
+            ordered.append(exact)
+        if pref_host:
+            for u in urls:
+                if (urlparse(u).hostname or "").lower() == pref_host:
+                    ordered.append(u)
+        ordered.extend(urls)
+        return dedupe_keep_order(ordered)
 
     def put_result(self, result: ExtractResult) -> StoredJob:
         job_id = secrets.token_urlsafe(9)
@@ -1013,6 +1046,7 @@ class JobStore:
                     pair_index=pair_idx,
                     stem=stem,
                     asset=asset,
+                    platform=result.platform,
                 )
             )
 
@@ -1024,6 +1058,7 @@ class JobStore:
             while len(self._jobs) > self.max_jobs:
                 _, evicted = self._jobs.popitem(last=False)
                 for sa in evicted.assets:
+                    sa.thumb_bytes = None
                     self._assets.pop(sa.asset_id, None)
         return job
 
@@ -1037,27 +1072,75 @@ class JobStore:
 
     def candidate_urls_for(self, sa: StoredAsset) -> List[str]:
         with self._lock:
-            cached = sa.resolved_url
-        if not cached:
-            return list(sa.asset.urls)
-        return [cached] + [u for u in sa.asset.urls if u != cached]
+            exact = sa.resolved_url
+            pref = self._preferred_hosts.get((sa.platform, False))
+        return self._prioritize_urls(list(sa.asset.urls), exact, pref)
 
     def thumb_urls_for(self, sa: StoredAsset) -> List[str]:
-        if sa.asset.thumb_urls:
-            if sa.asset.kind in ("video", "live_video"):
-                return dedupe_keep_order(list(sa.asset.thumb_urls))
-            return dedupe_keep_order(list(sa.asset.thumb_urls) + list(sa.asset.urls))
-        return self.candidate_urls_for(sa)
-
-    def remember_winning(self, sa: StoredAsset, url: str, ext: str) -> None:
+        if not sa.asset.thumb_urls:
+            return self.candidate_urls_for(sa)
+        if sa.asset.kind in ("video", "live_video"):
+            base = list(sa.asset.thumb_urls)
+        else:
+            base = list(sa.asset.thumb_urls) + list(sa.asset.urls)
         with self._lock:
-            sa.resolved_url = url
-            sa.resolved_ext = ext
+            exact = sa.resolved_thumb_url
+            pref = self._preferred_hosts.get((sa.platform, True))
+        return self._prioritize_urls(base, exact, pref)
+
+    def remember_winning(self, sa: StoredAsset, url: str, ext: str, is_thumb: bool = False) -> None:
+        host = (urlparse(url).hostname or "").lower()
+        with self._lock:
+            if host and sa.platform:
+                self._preferred_hosts[(sa.platform, bool(is_thumb))] = host
+            if is_thumb:
+                sa.resolved_thumb_url = url
+            else:
+                sa.resolved_url = url
+                sa.resolved_ext = ext
+
+    def get_cached_thumb(self, sa: StoredAsset) -> Optional[Tuple[bytes, str, str]]:
+        with self._lock:
+            if sa.thumb_bytes is None:
+                return None
+            return sa.thumb_bytes, (sa.thumb_content_type or "image/jpeg"), (sa.thumb_ext or ".jpg")
+
+    def cache_thumb(self, sa: StoredAsset, data: bytes, content_type: str, ext: str) -> None:
+        if not data or len(data) > _MAX_THUMB_CACHE_BYTES:
+            return
+        with self._lock:
+            if sa.asset_id not in self._assets:
+                return
+            sa.thumb_bytes = data
+            sa.thumb_content_type = content_type
+            sa.thumb_ext = ext
+
+    def acquire_thumb_slot(self, asset_id: str) -> Tuple[bool, threading.Event]:
+        """Deduplicate concurrent upstream thumbnail fetches for the same asset."""
+        with self._lock:
+            ev = self._thumb_inflight.get(asset_id)
+            if ev is not None:
+                return False, ev
+            ev = threading.Event()
+            self._thumb_inflight[asset_id] = ev
+            return True, ev
+
+    def release_thumb_slot(self, asset_id: str, ev: threading.Event) -> None:
+        with self._lock:
+            if self._thumb_inflight.get(asset_id) is ev:
+                self._thumb_inflight.pop(asset_id, None)
+        ev.set()
 
     def clear(self) -> None:
         with self._lock:
+            for sa in self._assets.values():
+                sa.thumb_bytes = None
             self._jobs.clear()
             self._assets.clear()
+            self._preferred_hosts.clear()
+            for ev in self._thumb_inflight.values():
+                ev.set()
+            self._thumb_inflight.clear()
 
 
 def _build_zip_bytes(job: StoredJob, store: JobStore, client: HttpClient, config: Config) -> Tuple[str, bytes]:
@@ -1226,19 +1309,36 @@ def make_handler(state: WebAppState):
         def log_message(self, format: str, *args: Any) -> None:
             return
 
-        def _send_bytes(self, status: int, content_type: str, body: bytes, extra: Optional[Dict[str, str]] = None) -> None:
+        def _send_bytes(
+            self,
+            status: int,
+            content_type: str,
+            body: bytes,
+            extra: Optional[Dict[str, str]] = None,
+            close_conn: bool = False,
+        ) -> None:
+            if close_conn:
+                self.close_connection = True
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            if not extra or "Cache-Control" not in extra:
+                self.send_header("Cache-Control", "no-store")
+            if close_conn:
+                self.send_header("Connection", "close")
             if extra:
                 for k, v in extra.items():
                     self.send_header(k, v)
             self.end_headers()
             self.wfile.write(body)
 
-        def _send_json(self, status: int, obj: Any) -> None:
-            self._send_bytes(status, "application/json; charset=utf-8", json.dumps(obj, ensure_ascii=False).encode("utf-8"))
+        def _send_json(self, status: int, obj: Any, close_conn: bool = False) -> None:
+            self._send_bytes(
+                status,
+                "application/json; charset=utf-8",
+                json.dumps(obj, ensure_ascii=False).encode("utf-8"),
+                close_conn=close_conn,
+            )
 
         def _read_json(self) -> Dict[str, Any]:
             length = int(self.headers.get("Content-Length") or "0")
@@ -1276,6 +1376,7 @@ def make_handler(state: WebAppState):
                         "can_shutdown": state.can_shutdown,
                         "output_dir": str(cfg.output_dir),
                     },
+                    close_conn=True,
                 )
                 return
             if path.startswith("/api/media/"):
@@ -1308,7 +1409,7 @@ def make_handler(state: WebAppState):
 
             if path == "/api/heartbeat":
                 self._drain_body()
-                self._send_json(HTTPStatus.OK, {"ok": True})
+                self._send_json(HTTPStatus.OK, {"ok": True}, close_conn=True)
                 return
 
             if path == "/api/leave":
@@ -1316,7 +1417,7 @@ def make_handler(state: WebAppState):
                 mode = parse_qs(parsed.query).get("mode", ["hidden"])[0]
                 delay = 8.0 if mode == "close" else 60.0
                 state.mark_leave(delay)
-                self._send_json(HTTPStatus.OK, {"ok": True, "mode": mode})
+                self._send_json(HTTPStatus.OK, {"ok": True, "mode": mode}, close_conn=True)
                 return
 
             if path == "/api/extract":
@@ -1377,10 +1478,10 @@ def make_handler(state: WebAppState):
                 try:
                     payload = self._read_json()
                 except Exception:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "请求 JSON 格式有误"})
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "请求 JSON 格式有误"}, close_conn=True)
                     return
                 _save_web_config(payload, state.config_dir)
-                self._send_json(HTTPStatus.OK, {"ok": True})
+                self._send_json(HTTPStatus.OK, {"ok": True}, close_conn=True)
                 return
 
             if path.startswith("/api/save/"):
@@ -1409,13 +1510,13 @@ def make_handler(state: WebAppState):
 
             if path == "/api/shutdown":
                 if not state.can_shutdown or (not state.hibernate_only and state.server is None):
-                    self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "当前模式不允许远程关闭"})
+                    self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "当前模式不允许远程关闭"}, close_conn=True)
                     return
                 if state.hibernate_only:
                     state.hibernate()
-                    self._send_json(HTTPStatus.OK, {"ok": True, "hibernated": True})
+                    self._send_json(HTTPStatus.OK, {"ok": True, "hibernated": True}, close_conn=True)
                     return
-                self._send_json(HTTPStatus.OK, {"ok": True})
+                self._send_json(HTTPStatus.OK, {"ok": True}, close_conn=True)
                 threading.Thread(target=state.server.shutdown, daemon=True).start()
                 return
 
@@ -1427,67 +1528,113 @@ def make_handler(state: WebAppState):
                 self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "资源不存在或已过期，请重新提取"})
                 return
 
-            _, client = state.client()
-            expected = (
-                "image"
-                if (as_thumb and sa.asset.thumb_urls)
-                else ("video" if sa.asset.kind in ("video", "live_video") else "image")
-            )
             range_hdr = self.headers.get("Range")
-            urls = (
-                state.store.thumb_urls_for(sa)
-                if (as_thumb and sa.asset.thumb_urls)
-                else state.store.candidate_urls_for(sa)
-            )
-            with state.busy():
-                try:
-                    stream = client.open_media_candidates(
-                        urls,
-                        default_ext=sa.asset.default_ext,
-                        expected_prefix=expected,
-                        headers=sa.asset.headers,
-                        mobile=sa.asset.mobile,
-                        range_header=range_hdr,
+            use_thumb = bool(as_thumb and sa.asset.thumb_urls)
+            allow_thumb_cache = bool(use_thumb and not as_download and not range_hdr)
+            slot_ev: Optional[threading.Event] = None
+            owns_slot = False
+
+            if allow_thumb_cache:
+                cached = state.store.get_cached_thumb(sa)
+                if cached is not None:
+                    self._send_bytes(
+                        HTTPStatus.OK,
+                        cached[1],
+                        cached[0],
+                        extra={"Cache-Control": "private, max-age=300"},
                     )
-                except Exception as e:
-                    self._send_json(HTTPStatus.BAD_GATEWAY, {"ok": False, "error": f"拉取媒体失败: {e}"})
                     return
-
-                if not as_thumb:
-                    state.store.remember_winning(sa, stream.winning_url, stream.ext)
-                try:
-                    self.send_response(stream.status)
-                    self.send_header("Content-Type", stream.content_type)
-                    if stream.content_length:
-                        self.send_header("Content-Length", stream.content_length)
-                    else:
-                        self.send_header("Connection", "close")
-                        self.close_connection = True
-                    if stream.content_range:
-                        self.send_header("Content-Range", stream.content_range)
-                    if stream.accept_ranges:
-                        self.send_header("Accept-Ranges", stream.accept_ranges)
-                    if as_download:
-                        ext = sa.resolved_ext or stream.ext
-                        fname = f"{sa.stem}{ext}"
-                        ascii_fb = f"media_{sa.index}{ext}"
-                        self.send_header(
-                            "Content-Disposition",
-                            f"attachment; filename=\"{ascii_fb}\"; filename*=UTF-8''{quote(fname)}",
+                owns_slot, slot_ev = state.store.acquire_thumb_slot(sa.asset_id)
+                if not owns_slot:
+                    slot_ev.wait(timeout=12.0)
+                    cached = state.store.get_cached_thumb(sa)
+                    if cached is not None:
+                        self._send_bytes(
+                            HTTPStatus.OK,
+                            cached[1],
+                            cached[0],
+                            extra={"Cache-Control": "private, max-age=300"},
                         )
-                    self.send_header("Cache-Control", "private, max-age=300")
-                    self.end_headers()
+                        return
+                    owns_slot, slot_ev = state.store.acquire_thumb_slot(sa.asset_id)
 
-                    self.wfile.write(stream.first_chunk)
-                    while True:
-                        chunk = stream.resp.read(65536)
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-                    pass
-                finally:
-                    stream.close()
+            try:
+                _, client = state.client()
+                expected = (
+                    "image"
+                    if use_thumb
+                    else ("video" if sa.asset.kind in ("video", "live_video") else "image")
+                )
+                urls = state.store.thumb_urls_for(sa) if use_thumb else state.store.candidate_urls_for(sa)
+                with state.busy():
+                    try:
+                        stream = client.open_media_candidates(
+                            urls,
+                            default_ext=sa.asset.default_ext,
+                            expected_prefix=expected,
+                            headers=sa.asset.headers,
+                            mobile=sa.asset.mobile,
+                            range_header=range_hdr,
+                        )
+                    except Exception as e:
+                        self._send_json(HTTPStatus.BAD_GATEWAY, {"ok": False, "error": f"拉取媒体失败: {e}"})
+                        return
+
+                    state.store.remember_winning(sa, stream.winning_url, stream.ext, is_thumb=use_thumb)
+                    thumb_buf: Optional[bytearray] = None
+                    if allow_thumb_cache and stream.status == 200:
+                        try:
+                            cl_val = int(stream.content_length) if stream.content_length else 0
+                        except ValueError:
+                            cl_val = 0
+                        if cl_val <= _MAX_THUMB_CACHE_BYTES and len(stream.first_chunk) <= _MAX_THUMB_CACHE_BYTES:
+                            thumb_buf = bytearray(stream.first_chunk)
+
+                    try:
+                        self.send_response(stream.status)
+                        self.send_header("Content-Type", stream.content_type)
+                        if stream.content_length:
+                            self.send_header("Content-Length", stream.content_length)
+                        else:
+                            self.send_header("Connection", "close")
+                            self.close_connection = True
+                        if stream.content_range:
+                            self.send_header("Content-Range", stream.content_range)
+                        if stream.accept_ranges:
+                            self.send_header("Accept-Ranges", stream.accept_ranges)
+                        if as_download:
+                            ext = sa.resolved_ext or stream.ext
+                            fname = f"{sa.stem}{ext}"
+                            ascii_fb = f"media_{sa.index}{ext}"
+                            self.send_header(
+                                "Content-Disposition",
+                                f"attachment; filename=\"{ascii_fb}\"; filename*=UTF-8''{quote(fname)}",
+                            )
+                        self.send_header("Cache-Control", "private, max-age=300")
+                        self.end_headers()
+
+                        self.wfile.write(stream.first_chunk)
+                        eof = False
+                        while True:
+                            chunk = stream.resp.read(65536)
+                            if not chunk:
+                                eof = True
+                                break
+                            if thumb_buf is not None:
+                                if len(thumb_buf) + len(chunk) <= _MAX_THUMB_CACHE_BYTES:
+                                    thumb_buf.extend(chunk)
+                                else:
+                                    thumb_buf = None
+                            self.wfile.write(chunk)
+                        if eof and thumb_buf:
+                            state.store.cache_thumb(sa, bytes(thumb_buf), stream.content_type, stream.ext)
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                        pass
+                    finally:
+                        stream.close()
+            finally:
+                if owns_slot and slot_ev is not None:
+                    state.store.release_thumb_slot(sa.asset_id, slot_ev)
 
         def _handle_zip(self, job_id: str) -> None:
             job = state.store.get_job(job_id)

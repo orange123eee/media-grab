@@ -16,7 +16,11 @@ for arg in "$@"; do
   esac
 done
 
-command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock >/dev/null 2>&1 || true
+ensure_wake_lock() {
+  command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock >/dev/null 2>&1 || true
+}
+
+ensure_wake_lock
 
 has_legacy_gate() {
   if command -v pgrep >/dev/null 2>&1 && pgrep -f "media_grab\.gate" >/dev/null 2>&1; then
@@ -114,6 +118,7 @@ PYEOF
 
 if [ "$RESTART" -eq 1 ]; then
   stop_existing
+  ensure_wake_lock
 fi
 
 if ! is_listening; then

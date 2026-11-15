@@ -18,6 +18,10 @@ PRIORITY_HOSTS = (
     "xhscdn.com",
     "x.com",
     "twitter.com",
+    "fxtwitter.com",
+    "vxtwitter.com",
+    "fixupx.com",
+    "t.co",
 )
 
 
@@ -47,7 +51,10 @@ def detect_platform(url: str) -> Optional[str]:
         return "douyin"
     if any(host == d or host.endswith("." + d) for d in ("xhslink.com", "xhslink.cn", "xiaohongshu.com")):
         return "xiaohongshu"
-    if any(host == d or host.endswith("." + d) for d in ("x.com", "twitter.com", "t.co")):
+    if any(
+        host == d or host.endswith("." + d)
+        for d in ("x.com", "twitter.com", "t.co", "fxtwitter.com", "vxtwitter.com", "fixupx.com")
+    ):
         return "x"
     return None
 

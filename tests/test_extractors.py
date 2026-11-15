@@ -12,6 +12,7 @@ from media_grab.cli import _build_stem, main as cli_main, run_grab, save_cookie_
 from media_grab.config import Config, load_config
 from media_grab.extractors import ExtractResult, ExtractionError, MediaAsset, extract
 from media_grab.extractors.douyin import _parse_douyin_json, extract_douyin, parse_douyin_payload
+from media_grab.extractors.x import extract_x, parse_fxtwitter_tweet, parse_syndication_tweet
 from media_grab.extractors.xiaohongshu import _parse_xhs_state, extract_xiaohongshu, parse_xhs_state
 from media_grab.http_client import HttpClient, HttpError, HttpResponse
 from media_grab.utils import (
@@ -154,10 +155,17 @@ class DouyinExtractorTests(unittest.TestCase):
         self.assertEqual(res.assets[0].thumb_urls[0], "https://p3.douyinpic.com/img/a.webp")
         self.assertEqual(res.assets[1].urls[0], "https://aweme.snssdk.com/aweme/v1/play/?video_id=live1")
 
-    def test_x_platform_pending_error(self):
-        cfg = Config()
-        with self.assertRaises(ExtractionError):
-            extract("https://x.com/elonmusk/status/123", HttpClient(cfg), cfg)
+    def test_detect_platform_and_extract_url_for_x(self):
+        for sample in (
+            "https://x.com/elonmusk/status/1234567890",
+            "https://mobile.twitter.com/nasa/status/999",
+            "https://fxtwitter.com/user/status/888",
+            "https://fixupx.com/user/status/777",
+            "https://t.co/abcDEF12",
+        ):
+            self.assertEqual(detect_platform(sample), "x")
+        mixed = "看这个视频 https://x.com/nasa/status/1628832338187636740?s=20 很清晰"
+        self.assertEqual(extract_url(mixed), "https://x.com/nasa/status/1628832338187636740?s=20")
 
     def test_douyin_fallbacks_to_iesdouyin_share_page(self):
         payload = {
@@ -268,6 +276,14 @@ class XiaohongshuExtractorTests(unittest.TestCase):
             res_signed.assets[0].thumb_urls[0],
             "https://sns-img-hw.xhscdn.com/1040g2sg3272o559176hg5pvasid1i1niileucv8?imageView2/2/w/720/format/webp",
         )
+        # Slower ci.xiaohongshu.com must never outrank sns-img-hw in either full or thumb lists.
+        ci_idx = next(i for i, u in enumerate(signed_urls) if "ci.xiaohongshu.com" in u)
+        hw_idx = next(i for i, u in enumerate(signed_urls) if "sns-img-hw.xhscdn.com" in u)
+        self.assertLess(hw_idx, ci_idx)
+        th_urls = res_signed.assets[0].thumb_urls
+        ci_th_idx = next(i for i, u in enumerate(th_urls) if "ci.xiaohongshu.com" in u)
+        hw_th_idx = next(i for i, u in enumerate(th_urls) if "sns-img-hw.xhscdn.com" in u)
+        self.assertLess(hw_th_idx, ci_th_idx)
 
     def test_parse_xhs_video_picks_highest_resolution_and_skips_cover_image(self):
         state = {
@@ -298,6 +314,7 @@ class XiaohongshuExtractorTests(unittest.TestCase):
         self.assertEqual(len(res.assets), 1)
         self.assertEqual(res.assets[0].kind, "video")
         self.assertEqual(res.assets[0].urls[0], "https://v.xhscdn.com/1080.mp4")
+        self.assertTrue(res.assets[0].thumb_urls)
 
     def test_xhs_captcha_raises_actionable_error(self):
         class FakeClient:
@@ -307,6 +324,158 @@ class XiaohongshuExtractorTests(unittest.TestCase):
         with self.assertRaises(ExtractionError) as ctx:
             extract_xiaohongshu("http://xhslink.com/a/123", FakeClient(), Config())
         self.assertIn("xhs_cookie", str(ctx.exception))
+
+
+class XExtractorTests(unittest.TestCase):
+    def test_parse_fxtwitter_photos_and_highest_bitrate_video(self):
+        payload = {
+            "code": 200,
+            "tweet": {
+                "id": "1888999000",
+                "text": "Rocket launch shot",
+                "author": {"name": "NASA", "screen_name": "NASA"},
+                "media": {
+                    "all": [
+                        {"type": "photo", "url": "https://pbs.twimg.com/media/AbCdEfG.jpg?name=large"},
+                        {
+                            "type": "video",
+                            "url": "https://video.twimg.com/ext_tw_video/1/pu/vid/avc1/640x360/low.mp4",
+                            "thumbnail_url": "https://pbs.twimg.com/amplify_video_thumb/1/img/thumb1.jpg",
+                            "variants": [
+                                {
+                                    "bitrate": 256000,
+                                    "content_type": "video/mp4",
+                                    "url": "https://video.twimg.com/ext_tw_video/1/pu/vid/avc1/480x270/a.mp4",
+                                },
+                                {
+                                    "content_type": "application/x-mpegURL",
+                                    "url": "https://video.twimg.com/ext_tw_video/1/pu/pl/master.m3u8",
+                                },
+                                {
+                                    "bitrate": 2176000,
+                                    "content_type": "video/mp4",
+                                    "url": "https://video.twimg.com/ext_tw_video/1/pu/vid/avc1/1920x1080/hi.mp4",
+                                },
+                            ],
+                        },
+                    ]
+                },
+            },
+        }
+        res = parse_fxtwitter_tweet(payload)
+        self.assertIsNotNone(res)
+        self.assertEqual(res.platform, "x")
+        self.assertEqual(res.author, "NASA")
+        self.assertEqual([a.kind for a in res.assets], ["image", "video"])
+        self.assertEqual(res.assets[0].urls[0], "https://pbs.twimg.com/media/AbCdEfG?format=jpg&name=orig")
+        self.assertEqual(res.assets[0].thumb_urls[0], "https://pbs.twimg.com/media/AbCdEfG?format=jpg&name=medium")
+        self.assertEqual(
+            res.assets[1].urls[0],
+            "https://video.twimg.com/ext_tw_video/1/pu/vid/avc1/1920x1080/hi.mp4",
+        )
+        self.assertTrue(all(".m3u8" not in u for u in res.assets[1].urls))
+        self.assertEqual(
+            res.assets[1].thumb_urls,
+            ["https://pbs.twimg.com/amplify_video_thumb/1/img/thumb1.jpg"],
+        )
+
+    def test_parse_fxtwitter_falls_back_to_quoted_tweet_media(self):
+        payload = {
+            "tweet": {
+                "id": "2001",
+                "text": "Retweet comment",
+                "author": {"screen_name": "commenter"},
+                "quote": {
+                    "media": {
+                        "photos": [{"type": "photo", "url": "https://pbs.twimg.com/media/QuotedPic.png"}]
+                    }
+                },
+            }
+        }
+        res = parse_fxtwitter_tweet(payload)
+        self.assertIsNotNone(res)
+        self.assertEqual(res.author, "@commenter")
+        self.assertEqual(res.assets[0].default_ext, ".png")
+        self.assertEqual(res.assets[0].urls[0], "https://pbs.twimg.com/media/QuotedPic?format=png&name=orig")
+
+    def test_parse_syndication_gif_photos_and_tombstone(self):
+        self.assertIsNone(parse_syndication_tweet({"__typename": "TweetTombstone"}))
+
+        payload = {
+            "id_str": "1628832338187636740",
+            "text": "Cat loop",
+            "user": {"name": "Clip", "screen_name": "clip"},
+            "mediaDetails": [
+                {
+                    "type": "animated_gif",
+                    "media_url_https": "https://pbs.twimg.com/tweet_video_thumb/Gif1.jpg",
+                    "video_info": {
+                        "variants": [
+                            {"bitrate": 0, "content_type": "video/mp4", "url": "https://video.twimg.com/tweet_video/Gif1.mp4"}
+                        ]
+                    },
+                },
+                {
+                    "type": "photo",
+                    "media_url_https": "https://pbs.twimg.com/media/Img2.png",
+                },
+            ],
+        }
+        res = parse_syndication_tweet(payload)
+        self.assertIsNotNone(res)
+        self.assertEqual([a.kind for a in res.assets], ["video", "image"])
+        self.assertEqual(res.assets[0].urls[0], "https://video.twimg.com/tweet_video/Gif1.mp4")
+        self.assertEqual(res.assets[1].urls[0], "https://pbs.twimg.com/media/Img2?format=png&name=orig")
+
+    def test_extract_x_resolves_t_co_and_falls_back_to_fixupx(self):
+        fx_payload = {
+            "code": 200,
+            "tweet": {
+                "id": "9876543210",
+                "text": "From mirror",
+                "author": {"name": "Dev"},
+                "media": {"photos": [{"type": "photo", "url": "https://pbs.twimg.com/media/Mir1.jpg"}]},
+            },
+        }
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def get(self, url, **kwargs):
+                self.calls.append(url)
+                if "t.co/" in url:
+                    return HttpResponse(200, "https://x.com/dev/status/9876543210?s=20", {}, b"")
+                if "cdn.syndication.twimg.com" in url:
+                    raise HttpError("syndication timeout")
+                if "api.fxtwitter.com" in url:
+                    return HttpResponse(200, url, {}, b"{}")
+                if "api.fixupx.com" in url:
+                    return HttpResponse(200, url, {}, json.dumps(fx_payload).encode("utf-8"))
+                raise AssertionError(f"unexpected url: {url}")
+
+        fc = FakeClient()
+        res = extract_x("https://t.co/shortX", fc, Config(timeout=20))
+        self.assertEqual(res.platform, "x")
+        self.assertEqual(res.item_id, "9876543210")
+        self.assertTrue(any("api.fixupx.com/dev/status/9876543210" in u for u in fc.calls))
+
+    def test_extract_x_text_only_tweet_reports_no_media_without_hitting_fallback(self):
+        class TextOnlyClient:
+            def __init__(self):
+                self.calls = []
+
+            def get(self, url, **kwargs):
+                self.calls.append(url)
+                if "cdn.syndication.twimg.com" in url:
+                    return HttpResponse(200, url, {}, json.dumps({"__typename": "Tweet", "text": "hello"}).encode("utf-8"))
+                return HttpResponse(200, url, {}, json.dumps({"code": 200, "tweet": {"id": "1", "text": "hello"}}).encode("utf-8"))
+
+        tc = TextOnlyClient()
+        with self.assertRaises(ExtractionError) as ctx:
+            extract_x("https://x.com/u/status/1", tc, Config(timeout=10))
+        self.assertIn("未检测到可提取", str(ctx.exception))
+        self.assertFalse(any("fixupx.com" in u for u in tc.calls))
 
 
 class ConfigAndDownloadTests(unittest.TestCase):
@@ -365,6 +534,39 @@ class ConfigAndDownloadTests(unittest.TestCase):
             self.assertEqual(saved.name, "xhs_test_1.png")
             self.assertTrue(saved.is_file())
             self.assertGreater(saved.stat().st_size, 2048)
+
+    def test_open_media_candidates_uses_shorter_probe_timeout_on_non_final_candidate(self):
+        seen_timeouts = []
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"P" * 1024
+
+        class FakeResp:
+            def __init__(self):
+                self.status = 200
+                self.headers = {"Content-Type": "image/png", "Content-Length": str(len(png_bytes))}
+                self._bio = io.BytesIO(png_bytes)
+
+            def read(self, n=-1):
+                return self._bio.read(n)
+
+            def close(self):
+                self._bio.close()
+
+        class FakeOpener:
+            def open(self, req, timeout=10):
+                seen_timeouts.append((req.full_url, timeout))
+                if "slow.example" in req.full_url:
+                    raise TimeoutError("slow host timed out")
+                return FakeResp()
+
+        client = HttpClient(Config(timeout=25))
+        with patch("urllib.request.build_opener", return_value=FakeOpener()):
+            stream = client.open_media_candidates(
+                ["https://slow.example/1.png", "https://fast.example/1.png"],
+                default_ext=".png",
+                expected_prefix="image",
+            )
+            stream.close()
+        self.assertEqual(seen_timeouts, [("https://slow.example/1.png", 6), ("https://fast.example/1.png", 25)])
 
     def test_download_candidates_raises_if_all_fail(self):
         class FakeOpener:
