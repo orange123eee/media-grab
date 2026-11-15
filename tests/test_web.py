@@ -279,10 +279,12 @@ class WebServerTests(unittest.TestCase):
         self.assertIn("cache: 'no-store'", idx_html)
         self.assertIn(".badge.x", idx_html)
         self.assertIn("decoding=\"async\"", idx_html)
+        self.assertIn(".grid.single", idx_html)
+        self.assertIn("lbQuality", idx_html)
 
         _, _, sw_raw = self._req("/sw.js")
         sw_text = sw_raw.decode("utf-8")
-        self.assertIn("media-grab-shell-v5", sw_text)
+        self.assertIn("media-grab-shell-v6", sw_text)
         self.assertIn("SW_OFFLINE_HTML", sw_text)
         self.assertIn(".catch(() => null)", sw_text)
         self.assertNotIn("fetch(req,", sw_text)

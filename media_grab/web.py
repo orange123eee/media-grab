@@ -47,7 +47,7 @@ MANIFEST_JSON = json.dumps(
     ensure_ascii=False,
 )
 
-SW_JS = """const CACHE_NAME = 'media-grab-shell-v5';
+SW_JS = """const CACHE_NAME = 'media-grab-shell-v6';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg'];
 const SW_OFFLINE_HTML = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="background:#0b0e14;color:#eef2f8;font-family:sans-serif;padding:24px;line-height:1.6"><h3>本地 Termux 服务被系统暂停</h3><p style="color:#9aa7bd">正在自动检测并恢复连接；若 3 秒后仍未跳转，请点下方按钮唤起 Termux 后切回本页（建议在系统设置将 Termux 省电策略设为「无限制」）：</p><p><a href="intent://#Intent;package=com.termux;end" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;border-radius:10px;text-decoration:none">⚡ 一键唤醒 Termux 服务</a> <button onclick="location.replace(\\'/\\')" style="padding:12px 16px;background:#1e2636;color:#eef2f8;border:1px solid #334155;border-radius:10px;margin-left:8px">立即刷新</button></p><script>function p(){fetch("/api/config",{cache:"no-store"}).then(function(r){if(r.ok)location.replace("/")}).catch(function(){})}p();setInterval(p,1200);document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible")p()})</script></body>';
 
@@ -131,21 +131,21 @@ INDEX_HTML = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0b0e14">
+<meta name="theme-color" content="#070a10">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
-<title>无水印提取 · 抖音 / 小红书</title>
+<title>无水印提取 · 抖音 / 小红书 / X</title>
 <style>
   :root {
     color-scheme: dark;
-    --bg: #0b0e14;
-    --card: rgba(23, 27, 36, 0.9);
-    --card-solid: #171b24;
-    --line: rgba(255, 255, 255, 0.08);
-    --line-hi: rgba(96, 165, 250, 0.45);
+    --bg: #070a10;
+    --card: rgba(19, 24, 34, 0.9);
+    --card-solid: #141923;
+    --line: rgba(255, 255, 255, 0.085);
+    --line-hi: rgba(96, 165, 250, 0.52);
     --text: #eef2f8;
-    --muted: #8b95a8;
+    --muted: #8b96aa;
     --accent: #3b82f6;
     --accent-hi: #2563eb;
     --accent-soft: rgba(59, 130, 246, 0.16);
@@ -157,74 +157,92 @@ INDEX_HTML = r"""<!doctype html>
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   body {
     margin: 0;
-    padding: 16px 14px 86px;
+    padding: calc(14px + env(safe-area-inset-top)) 13px calc(76px + env(safe-area-inset-bottom));
     background:
-      radial-gradient(600px 320px at 15% -10%, rgba(59, 130, 246, .18), transparent 65%),
-      radial-gradient(500px 260px at 90% 5%, rgba(255, 36, 66, .12), transparent 65%),
+      radial-gradient(620px 300px at 12% -8%, rgba(59, 130, 246, .20), transparent 64%),
+      radial-gradient(520px 260px at 92% 4%, rgba(255, 36, 66, .13), transparent 64%),
+      radial-gradient(460px 240px at 52% 105%, rgba(6, 182, 212, .08), transparent 65%),
       var(--bg);
     color: var(--text);
     font: 15px/1.55 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
     min-height: 100vh;
   }
   .wrap { max-width: 680px; margin: 0 auto; }
-  .hd { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
-  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .hd { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; padding: 2px 2px 0; }
+  .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
   .logo {
-    width: 38px; height: 38px; border-radius: 12px; flex-shrink: 0;
+    width: 40px; height: 40px; border-radius: 13px; flex-shrink: 0;
     background: linear-gradient(135deg, #2563eb, #06b6d4);
     display: flex; align-items: center; justify-content: center;
-    box-shadow: 0 6px 18px rgba(37, 99, 235, .3);
+    box-shadow: 0 8px 20px rgba(37, 99, 235, .34), inset 0 1px 0 rgba(255, 255, 255, .28);
   }
   .logo svg { width: 22px; height: 22px; }
-  h1 { font-size: 19px; margin: 0; letter-spacing: .2px; }
-  .sub { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; margin-top: 1px; }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; transition: background .2s; }
-  .dot.on { background: var(--ok); box-shadow: 0 0 8px rgba(63, 185, 80, .65); }
-  .dot.off { background: var(--err); }
+  h1 { font-size: 19px; font-weight: 700; margin: 0; letter-spacing: .2px; line-height: 1.25; }
+  .sub { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; flex-shrink: 0; transition: background .2s, box-shadow .2s; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px rgba(63, 185, 80, .75); }
+  .dot.off { background: var(--err); box-shadow: 0 0 8px rgba(248, 81, 73, .55); }
   .hd-acts { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
   .pill {
-    border: 1px solid var(--line); background: var(--card); color: var(--text);
+    border: 1px solid var(--line); background: rgba(255, 255, 255, .04); color: var(--text);
     border-radius: 999px; padding: 7px 12px; font-size: 12.5px; font-weight: 500;
-    cursor: pointer; white-space: nowrap; min-height: 34px;
+    cursor: pointer; white-space: nowrap; min-height: 34px; transition: background .15s, border-color .15s;
   }
-  .pill:active { opacity: .8; }
+  .pill:active { opacity: .82; background: rgba(255, 255, 255, .08); }
   .card {
     background: var(--card); border: 1px solid var(--line); border-radius: 18px;
-    padding: 15px; margin-bottom: 14px; backdrop-filter: blur(12px);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, .24);
+    padding: 14px; margin-bottom: 13px; backdrop-filter: blur(14px);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .04);
   }
+  .card.anim { animation: cardIn .22s cubic-bezier(.22, .68, 0, 1); }
+  @keyframes cardIn { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
+  .plats { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+  .pchip {
+    font-size: 11.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+    background: rgba(255, 255, 255, .05); border: 1px solid rgba(255, 255, 255, .08);
+    color: var(--muted); transition: all .18s ease;
+  }
+  .pchip.act-dy { background: rgba(37, 244, 238, .15); border-color: rgba(37, 244, 238, .42); color: #7af5f0; }
+  .pchip.act-xhs { background: rgba(255, 36, 66, .16); border-color: rgba(255, 107, 129, .45); color: #ff7a8d; }
+  .pchip.act-x { background: rgba(255, 255, 255, .14); border-color: rgba(255, 255, 255, .36); color: #f8fafc; }
+  .pnote { font-size: 11.5px; color: var(--muted); margin-left: auto; opacity: .85; }
   textarea {
-    width: 100%; min-height: 92px; border: 1px solid var(--line); background: rgba(9, 12, 18, .85);
-    color: var(--text); border-radius: 13px; padding: 12px; font: 14px/1.5 inherit;
+    width: 100%; min-height: 92px; border: 1px solid var(--line); background: rgba(8, 11, 17, .88);
+    color: var(--text); border-radius: 13px; padding: 11px 12px; font: 14px/1.5 inherit;
     resize: vertical; outline: none; transition: border-color .18s, box-shadow .18s;
   }
-  textarea:focus { border-color: var(--line-hi); box-shadow: 0 0 0 3px rgba(59, 130, 246, .15); }
+  textarea:focus { border-color: var(--line-hi); box-shadow: 0 0 0 3px rgba(59, 130, 246, .16); }
   .detect {
     display: none; align-items: center; justify-content: space-between; gap: 8px;
     margin-top: 9px; padding: 8px 11px; border-radius: 10px; font-size: 12.5px;
-    background: var(--ok-soft); border: 1px solid rgba(63, 185, 80, .28); color: #9ae6b4;
+    background: var(--ok-soft); border: 1px solid rgba(63, 185, 80, .30); color: #9ae6b4;
   }
-  .detect.warn { background: rgba(227, 179, 65, .1); border-color: rgba(227, 179, 65, .28); color: #f6d57a; }
+  .detect.warn { background: rgba(227, 179, 65, .11); border-color: rgba(227, 179, 65, .30); color: #f6d57a; }
   .detect.show { display: flex; }
   .detect-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .detect-btn {
-    border: 1px solid rgba(255,255,255,.16); background: rgba(255,255,255,.08); color: #fff;
+    border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.09); color: #fff;
     border-radius: 7px; padding: 4px 8px; font-size: 11.5px; min-height: 26px; cursor: pointer; flex-shrink: 0;
   }
   .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .row-3 { display: grid; grid-template-columns: auto 1fr 1.25fr; gap: 8px; margin-top: 10px; }
+  .row-3 button { min-width: 0; padding: 0 10px; }
   button, a.btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-    min-height: 44px; border-radius: 12px; font: 600 14.5px/1 inherit; padding: 0 15px;
-    border: 1px solid var(--line); background: #222836; color: var(--text);
-    text-decoration: none; cursor: pointer; transition: transform .08s, opacity .15s, background .15s;
+    min-height: 44px; border-radius: 12px; font: 600 14px/1 inherit; padding: 0 13px;
+    border: 1px solid var(--line); background: #202736; color: var(--text);
+    text-decoration: none; cursor: pointer; white-space: nowrap;
+    transition: transform .08s, opacity .15s, background .15s, border-color .15s;
   }
-  button:active, a.btn:active { transform: scale(.985); }
+  button svg, a.btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+  button:active, a.btn:active { transform: scale(.98); }
   button.pri, a.btn.pri {
     background: linear-gradient(135deg, var(--accent), var(--accent-hi));
     border-color: transparent; color: #fff; flex: 1.25;
-    box-shadow: 0 4px 14px rgba(37, 99, 235, .28);
+    box-shadow: 0 5px 16px rgba(37, 99, 235, .30), inset 0 1px 0 rgba(255, 255, 255, .2);
   }
-  button.sec { flex: 1; }
+  button.sec { flex: 1; background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .11); }
+  button.ghost { background: rgba(255, 255, 255, .03); color: var(--muted); padding: 0 12px; }
   button:disabled { opacity: .55; cursor: not-allowed; transform: none; }
   .prog { display: none; height: 3px; border-radius: 3px; background: rgba(255,255,255,.06); overflow: hidden; margin-top: 11px; }
   .prog.show { display: block; }
@@ -234,76 +252,121 @@ INDEX_HTML = r"""<!doctype html>
     animation: slide 1.1s ease-in-out infinite;
   }
   @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(260%); } }
-  .hint { margin-top: 9px; font-size: 12.5px; color: var(--muted); min-height: 18px; }
+  .hint { margin-top: 9px; font-size: 12px; color: var(--muted); min-height: 17px; line-height: 1.45; }
   .err { display: none; margin-top: 10px; padding: 11px 12px; border-radius: 11px; background: rgba(248, 81, 73, .12); border: 1px solid rgba(248, 81, 73, .35); color: #ffb3ae; font-size: 13px; }
   .err.show { display: block; }
   .err button { min-height: 32px; padding: 0 10px; font-size: 12px; margin-top: 8px; }
-  .meta { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
-  .badge { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--accent-soft); color: #8ac4ff; margin-right: 6px; vertical-align: 1px; }
-  .badge.xhs { background: rgba(255, 36, 66, .18); color: #ff6b81; }
-  .badge.dy { background: linear-gradient(135deg, rgba(37, 244, 238, .18), rgba(254, 44, 85, .18)); color: #6ef3ef; }
-  .badge.x { background: rgba(238, 242, 248, .14); color: #e2e8f0; border: 1px solid rgba(255,255,255,.16); }
-  .title { font-weight: 600; font-size: 15.5px; word-break: break-word; }
-  .author { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+  .meta { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 11px; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: #8ac4ff; margin-right: 7px; vertical-align: 1px; letter-spacing: .2px; }
+  .badge.xhs { background: rgba(255, 36, 66, .20); color: #ff7086; }
+  .badge.dy { background: linear-gradient(135deg, rgba(37, 244, 238, .18), rgba(254, 44, 85, .18)); color: #75f4ef; }
+  .badge.x { background: rgba(238, 242, 248, .14); color: #f1f5f9; border: 1px solid rgba(255,255,255,.18); }
+  .title { font-weight: 600; font-size: 15.5px; line-height: 1.45; word-break: break-word; }
+  .author { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
   .acts { display: flex; gap: 8px; margin: 10px 0 14px; flex-wrap: wrap; }
-  .vbox { background: #000; border-radius: 13px; overflow: hidden; margin-bottom: 10px; border: 1px solid var(--line); }
+  .vbox { background: #000; border-radius: 14px; overflow: hidden; margin-bottom: 10px; border: 1px solid var(--line); box-shadow: 0 6px 20px rgba(0, 0, 0, .36); }
   .vbox video { width: 100%; max-height: 62vh; display: block; background: #000; }
   .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  @media (min-width: 560px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-  .item { background: #0e1118; border: 1px solid var(--line); border-radius: 13px; overflow: hidden; display: flex; flex-direction: column; }
+  .grid.single { grid-template-columns: minmax(0, 1fr); }
+  @media (min-width: 560px) { .grid:not(.single) { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .item { background: #0d1119; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; }
   .thumb {
-    position: relative; aspect-ratio: 3/4; overflow: hidden; cursor: zoom-in;
-    background: linear-gradient(110deg, #121620 25%, #1a202e 45%, #121620 65%);
+    position: relative; aspect-ratio: 4/5; overflow: hidden; cursor: zoom-in;
+    background: linear-gradient(110deg, #121722 25%, #1b2232 45%, #121722 65%);
     background-size: 200% 100%; animation: skel 1.3s linear infinite;
   }
+  .thumb.done { animation: none; background: #0a0d14; }
+  .grid.single .thumb { aspect-ratio: auto; min-height: 180px; max-height: 52vh; }
+  .grid.single .thumb img { max-height: 52vh; object-fit: contain; }
   @keyframes skel { 0% { background-position: 180% 0; } 100% { background-position: -20% 0; } }
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .22s ease; }
   .thumb img.loaded { opacity: 1; }
-  .tag { position: absolute; left: 7px; top: 7px; font-size: 11px; padding: 2px 7px; border-radius: 6px; background: rgba(0,0,0,.62); color: #fff; backdrop-filter: blur(4px); }
+  .thumb.broken img { opacity: 0; }
+  .thumb-err {
+    position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
+    gap: 4px; font-size: 12px; color: var(--muted); background: rgba(13, 17, 25, .92); cursor: pointer;
+  }
+  .thumb.broken .thumb-err { display: flex; }
+  .tag { position: absolute; left: 7px; top: 7px; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 7px; background: rgba(0,0,0,.62); color: #fff; backdrop-filter: blur(6px); }
+  .tag.live { left: auto; right: 7px; background: rgba(37, 99, 235, .78); }
+  .zoom-ic {
+    position: absolute; right: 7px; bottom: 7px; width: 24px; height: 24px; border-radius: 7px;
+    background: rgba(0, 0, 0, .52); color: rgba(255, 255, 255, .86); backdrop-filter: blur(4px);
+    display: flex; align-items: center; justify-content: center; pointer-events: none;
+  }
+  .zoom-ic svg { width: 13px; height: 13px; }
   .item-ft { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
-  .item-ft a.btn { min-height: 36px; font-size: 12.5px; width: 100%; border-radius: 9px; }
-  .hist-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .item-ft a.btn { min-height: 37px; font-size: 12.5px; width: 100%; border-radius: 9px; padding: 0 10px; }
+  .hist-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
   .hist-hd b { font-size: 14px; }
   .hist-clr { background: transparent; border: none; color: var(--muted); font-size: 12px; min-height: 28px; padding: 0 6px; cursor: pointer; }
   .hist-list { display: flex; flex-direction: column; gap: 7px; }
   .hist-row {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    padding: 9px 11px; border-radius: 11px; border: 1px solid var(--line); background: rgba(11, 14, 20, .7);
-    cursor: pointer; text-align: left; width: 100%; min-height: 42px;
+    padding: 9px 11px; border-radius: 12px; border: 1px solid var(--line); background: rgba(10, 13, 20, .75);
+    cursor: pointer; text-align: left; width: 100%; min-height: 44px;
   }
-  .hist-row:active { background: rgba(59, 130, 246, .12); }
+  .hist-row:active { background: rgba(59, 130, 246, .12); border-color: rgba(96, 165, 250, .35); }
   .hist-title { font-size: 13px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
   .hist-time { font-size: 11.5px; color: var(--muted); flex-shrink: 0; }
-  .modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .74); display: none; align-items: flex-end; justify-content: center; z-index: 99; padding: 12px; }
+  .modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .72); backdrop-filter: blur(5px); display: none; align-items: flex-end; justify-content: center; z-index: 99; padding: 12px; }
   .modal.open { display: flex; }
   @media (min-width: 560px) { .modal { align-items: center; } }
-  .sheet { width: 100%; max-width: 520px; background: var(--card-solid); border: 1px solid var(--line); border-radius: 18px; padding: 16px; max-height: 86vh; overflow: auto; }
-  .sheet h2 { margin: 0 0 10px; font-size: 17px; }
+  .sheet {
+    width: 100%; max-width: 520px; background: var(--card-solid); border: 1px solid rgba(255,255,255,.11);
+    border-radius: 20px; padding: 10px 16px 16px; max-height: 86vh; overflow: auto;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, .55); animation: sheetUp .2s ease;
+  }
+  @keyframes sheetUp { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: translateY(0); } }
+  .sheet-handle { width: 36px; height: 4px; border-radius: 99px; background: rgba(255, 255, 255, .18); margin: 0 auto 12px; }
+  .sheet h2 { margin: 0; font-size: 16.5px; }
   .field { margin-bottom: 12px; }
   .field label { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-bottom: 5px; }
-  .field label b { color: var(--ok); font-weight: 500; }
-  .field label b.off { color: var(--muted); }
+  .field label b { color: var(--ok); font-weight: 600; }
+  .field label b.off { color: var(--muted); font-weight: 500; }
   .field textarea { min-height: 66px; font-size: 12.5px; }
-  .chk { display: flex; align-items: center; gap: 8px; font-size: 13.5px; margin: 8px 0 14px; }
-  .lightbox { position: fixed; inset: 0; background: rgba(0, 0, 0, .94); display: none; flex-direction: column; align-items: center; justify-content: space-between; z-index: 120; padding: 14px; }
+  .chk {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    font-size: 13.5px; margin: 10px 0 14px; padding: 10px 12px;
+    border-radius: 12px; background: rgba(255, 255, 255, .03); border: 1px solid var(--line); cursor: pointer;
+  }
+  .sw { position: relative; width: 42px; height: 24px; flex-shrink: 0; }
+  .sw input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .sw-track {
+    position: absolute; inset: 0; border-radius: 99px; background: #2c3547; transition: background .18s;
+  }
+  .sw-track::after {
+    content: ""; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px;
+    border-radius: 50%; background: #fff; transition: transform .18s; box-shadow: 0 1px 4px rgba(0,0,0,.35);
+  }
+  .sw input:checked + .sw-track { background: var(--accent); }
+  .sw input:checked + .sw-track::after { transform: translateX(18px); }
+  .lightbox {
+    position: fixed; inset: 0; background: rgba(4, 6, 10, .95); backdrop-filter: blur(8px);
+    display: none; flex-direction: column; align-items: center; justify-content: space-between;
+    z-index: 120; padding: calc(12px + env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom));
+  }
   .lightbox.open { display: flex; }
-  .lb-top { width: 100%; display: flex; justify-content: space-between; align-items: center; color: #fff; font-size: 14px; }
+  .lb-top { width: 100%; max-width: 720px; display: flex; justify-content: space-between; align-items: center; gap: 10px; color: #fff; font-size: 14px; }
+  .lb-meta { display: flex; align-items: center; gap: 8px; }
+  .lb-qual { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,.10); color: #cbd5e1; }
+  .lb-qual.hd { background: rgba(63, 185, 80, .18); color: #86efac; }
   .lb-stage { flex: 1; width: 100%; display: flex; align-items: center; justify-content: center; position: relative; min-height: 0; margin: 8px 0; }
-  .lb-stage img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
+  .lb-stage img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 10px; }
   .lb-nav {
     position: absolute; top: 50%; transform: translateY(-50%);
-    width: 40px; height: 48px; border-radius: 10px; border: 1px solid rgba(255,255,255,.18);
-    background: rgba(0,0,0,.45); color: #fff; font-size: 22px; min-height: 40px; padding: 0;
+    width: 40px; height: 48px; border-radius: 12px; border: 1px solid rgba(255,255,255,.18);
+    background: rgba(15, 20, 30, .62); backdrop-filter: blur(6px); color: #fff; font-size: 22px; min-height: 40px; padding: 0;
   }
   .lb-nav.prev { left: 4px; }
   .lb-nav.next { right: 4px; }
-  .lb-ft { width: 100%; max-width: 360px; display: flex; gap: 8px; }
+  .lb-ft { width: 100%; max-width: 380px; display: flex; gap: 8px; }
   .toast {
-    position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 16px);
-    background: rgba(24, 29, 40, .96); border: 1px solid rgba(255,255,255,.14);
+    position: fixed; left: 50%; bottom: calc(22px + env(safe-area-inset-bottom)); transform: translate(-50%, 16px);
+    background: rgba(20, 26, 38, .96); border: 1px solid rgba(255,255,255,.15);
     color: #fff; padding: 10px 16px; border-radius: 999px; font-size: 13px;
     opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 150;
-    box-shadow: 0 8px 24px rgba(0,0,0,.45); white-space: nowrap; max-width: 90vw; overflow: hidden; text-overflow: ellipsis;
+    box-shadow: 0 10px 26px rgba(0,0,0,.48); white-space: nowrap; max-width: 90vw; overflow: hidden; text-overflow: ellipsis;
   }
   .toast.show { opacity: 1; transform: translate(-50%, 0); }
 </style>
@@ -323,8 +386,8 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
     <div class="hd-acts">
-      <button class="pill" id="stopBtn" type="button" style="display:none">关闭后台</button>
-      <button class="pill" id="cfgBtn" type="button">Cookie 设置</button>
+      <button class="pill" id="stopBtn" type="button" style="display:none">休眠</button>
+      <button class="pill" id="cfgBtn" type="button">设置</button>
     </div>
   </div>
 
@@ -338,18 +401,30 @@ INDEX_HTML = r"""<!doctype html>
   </div>
 
   <div class="card">
-    <textarea id="inp" placeholder="直接粘贴抖音 / 小红书 / X (Twitter) 分享文案或链接（不用手动删掉里面的中文，系统会自动识别）"></textarea>
+    <div class="plats">
+      <span class="pchip" id="pc-dy">抖音</span>
+      <span class="pchip" id="pc-xhs">小红书</span>
+      <span class="pchip" id="pc-x">X (Twitter)</span>
+      <span class="pnote">直链 · 原图 · 实况</span>
+    </div>
+    <textarea id="inp" placeholder="粘贴抖音 / 小红书 / X 分享文案或链接（自动过滤中文口令，粘贴即解析）"></textarea>
     <div class="detect" id="detectBar">
       <span class="detect-txt" id="detectTxt"></span>
       <button type="button" class="detect-btn" id="trimUrlBtn" style="display:none">仅留纯链接</button>
     </div>
-    <div class="row">
-      <button type="button" id="clrBtn">清空</button>
-      <button type="button" class="sec" id="pasteBtn">读取剪贴板</button>
-      <button type="button" class="pri" id="goBtn">提取无水印</button>
+    <div class="row-3">
+      <button type="button" class="ghost" id="clrBtn">清空</button>
+      <button type="button" class="sec" id="pasteBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        粘贴提取
+      </button>
+      <button type="button" class="pri" id="goBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        <span id="goTxt">提取无水印</span>
+      </button>
     </div>
     <div class="prog" id="prog"><i></i></div>
-    <div class="hint" id="hint">提示：粘贴整段口令后会自动识别链接，图集默认先秒开轻量预览、保存时下载最高画质无水印原图。</div>
+    <div class="hint" id="hint">粘贴整段分享即可自动识别：列表优先加载轻量缩略图，保存时下载无损原画。</div>
     <div class="err" id="err"></div>
   </div>
 
@@ -357,8 +432,8 @@ INDEX_HTML = r"""<!doctype html>
 
   <div class="card" id="histCard" style="display:none">
     <div class="hist-hd">
-      <b>最近提取记录</b>
-      <button type="button" class="hist-clr" id="clrHistBtn">清空记录</button>
+      <b>最近提取</b>
+      <button type="button" class="hist-clr" id="clrHistBtn">清空</button>
     </div>
     <div class="hist-list" id="histList"></div>
   </div>
@@ -366,12 +441,13 @@ INDEX_HTML = r"""<!doctype html>
 
 <div class="modal" id="cfgModal">
   <div class="sheet">
+    <div class="sheet-handle"></div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-      <h2 style="margin:0">Cookie 与偏好设置</h2>
-      <button type="button" id="cfgClose" style="min-height:34px;padding:0 11px;font-size:12.5px">关闭</button>
+      <h2>Cookie 与偏好设置</h2>
+      <button type="button" id="cfgClose" style="min-height:34px;padding:0 12px;font-size:12.5px">关闭</button>
     </div>
     <div class="sub" style="margin-bottom:12px;display:block">
-      仅在遇到平台滑块或登录风控时填写。在 X浏览器登录对应网页后，复制请求 Cookie 粘贴到下方保存即可（留空表示不修改当前已存值）。
+      仅在遇到平台滑块或登录风控时填写；留空表示保持当前配置。
     </div>
     <div class="field">
       <label><span>小红书 Cookie</span><b id="xhsSt">未配置</b></label>
@@ -382,11 +458,11 @@ INDEX_HTML = r"""<!doctype html>
       <textarea id="dyCk" placeholder="粘贴抖音 Cookie 字符串（需要清空请点下方清空按钮）"></textarea>
     </div>
     <label class="chk">
-      <input type="checkbox" id="liveChk" checked>
       <span>同时提取图集里的实况照片短视频</span>
+      <span class="sw"><input type="checkbox" id="liveChk" checked><span class="sw-track"></span></span>
     </label>
     <div class="row">
-      <button type="button" id="clrCkBtn">清空Cookie</button>
+      <button type="button" id="clrCkBtn" style="flex:1">清空 Cookie</button>
       <button type="button" class="pri" id="saveCfgBtn">保存设置</button>
     </div>
   </div>
@@ -394,7 +470,7 @@ INDEX_HTML = r"""<!doctype html>
 
 <div class="lightbox" id="lb">
   <div class="lb-top">
-    <span id="lbCount">1 / 1</span>
+    <div class="lb-meta"><span id="lbCount">1 / 1</span><span class="lb-qual" id="lbQuality">预览图</span></div>
     <button type="button" id="lbClose" style="min-height:34px;padding:0 12px;font-size:13px">关闭</button>
   </div>
   <div class="lb-stage" id="lbStage">
@@ -403,7 +479,7 @@ INDEX_HTML = r"""<!doctype html>
     <button type="button" class="lb-nav next" id="lbNext">›</button>
   </div>
   <div class="lb-ft">
-    <a class="btn pri" id="lbDl" href="#">保存本张无损原图</a>
+    <a class="btn pri" id="lbDl" href="#">下载本张无损原图</a>
   </div>
 </div>
 
@@ -503,6 +579,14 @@ function clientExtractUrl(text) {
   try { return { url: cleaned[0], host: new URL(cleaned[0]).hostname.toLowerCase() }; } catch (e) { return { url: cleaned[0], host: '' }; }
 }
 
+function setPlatChip(code) {
+  ['dy', 'xhs', 'x'].forEach(k => {
+    const el = $('pc-' + k);
+    if (!el) return;
+    el.className = 'pchip' + (code === k ? ' act-' + k : '');
+  });
+}
+
 function updateDetectBar() {
   const raw = $('inp').value.trim();
   const bar = $('detectBar');
@@ -511,6 +595,7 @@ function updateDetectBar() {
   if (!raw) {
     bar.className = 'detect';
     trimBtn.style.display = 'none';
+    setPlatChip('');
     return;
   }
   const found = clientExtractUrl(raw);
@@ -518,12 +603,15 @@ function updateDetectBar() {
     bar.className = 'detect warn show';
     txt.textContent = '未在内容里发现有效 http/https 链接，请确认已复制完整分享内容';
     trimBtn.style.display = 'none';
+    setPlatChip('');
     return;
   }
   let plat = '链接';
-  if (found.host.includes('douyin')) plat = '抖音';
-  else if (found.host.includes('xhs') || found.host.includes('xiaohongshu')) plat = '小红书';
-  else if (found.host === 'x.com' || found.host.endsWith('.x.com') || found.host.includes('twitter') || found.host.includes('fixupx') || found.host === 't.co') plat = 'X';
+  let chipCode = '';
+  if (found.host.includes('douyin')) { plat = '抖音'; chipCode = 'dy'; }
+  else if (found.host.includes('xhs') || found.host.includes('xiaohongshu')) { plat = '小红书'; chipCode = 'xhs'; }
+  else if (found.host === 'x.com' || found.host.endsWith('.x.com') || found.host.includes('twitter') || found.host.includes('fixupx') || found.host === 't.co') { plat = 'X'; chipCode = 'x'; }
+  setPlatChip(chipCode);
   bar.className = 'detect show';
   const hasExtra = raw !== found.url;
   txt.textContent = (hasExtra ? '✓ 已自动忽略文案，识别到【' : '✓ 已识别【') + plat + '】' + found.url;
@@ -618,7 +706,7 @@ async function runExtract(text) {
   busy = true;
   showErr('');
   $('goBtn').disabled = true;
-  $('goBtn').textContent = '解析中…';
+  if ($('goTxt')) $('goTxt').textContent = '解析中…';
   $('prog').classList.add('show');
 
   const t0 = performance.now();
@@ -684,7 +772,7 @@ async function runExtract(text) {
     clearInterval(timerId);
     $('prog').classList.remove('show');
     $('goBtn').disabled = false;
-    $('goBtn').textContent = '提取无水印';
+    if ($('goTxt')) $('goTxt').textContent = '提取无水印';
   }
 }
 
@@ -695,12 +783,22 @@ function showLightbox(idx) {
   $('lbCount').textContent = (lbIdx + 1) + ' / ' + lbImages.length;
   $('lbDl').href = im.download_url;
   const thumb = im.thumb_url || im.preview_url;
+  const qEl = $('lbQuality');
   $('lbImg').src = thumb;
   if (im.preview_url && im.preview_url !== thumb) {
+    if (qEl) { qEl.textContent = '高清预览 · 加载原图中'; qEl.className = 'lb-qual'; }
     const hi = new Image();
     const targetIdx = lbIdx;
-    hi.onload = () => { if (lbIdx === targetIdx && $('lb').classList.contains('open')) $('lbImg').src = im.preview_url; };
+    hi.onload = () => {
+      if (lbIdx === targetIdx && $('lb').classList.contains('open')) {
+        $('lbImg').src = im.preview_url;
+        if (qEl) { qEl.textContent = '无损原图 ✓'; qEl.className = 'lb-qual hd'; }
+      }
+    };
     hi.src = im.preview_url;
+  } else if (qEl) {
+    qEl.textContent = '无损原图 ✓';
+    qEl.className = 'lb-qual hd';
   }
   $('lbPrev').style.display = lbImages.length > 1 ? '' : 'none';
   $('lbNext').style.display = lbImages.length > 1 ? '' : 'none';
@@ -723,42 +821,45 @@ function renderResult(d) {
 
   let html = '<div class="meta"><div>' +
     '<div class="title"><span class="badge ' + badgeCls + '">' + esc(plat) + '</span>' + esc(d.title) + '</div>' +
-    '<div class="author">' + (d.author ? '作者：' + esc(d.author) + ' · ' : '') + esc(counts.join(' · ')) + '</div>' +
+    '<div class="author">' + (d.author ? esc(d.author) + ' · ' : '') + esc(counts.join(' · ')) + '</div>' +
     '</div></div>';
 
   if (d.assets.length > 0) {
     html += '<div class="acts">' +
-      '<button type="button" class="pri" id="saveLocalBtn">📥 一键全部存进相册</button>' +
-      (d.assets.length > 1 ? '<a class="btn" href="' + esc(d.zip_url) + '">📦 打包 (.zip)</a>' : '') +
+      '<button type="button" class="pri" id="saveLocalBtn">存进手机相册</button>' +
+      (d.assets.length > 1 ? '<a class="btn" href="' + esc(d.zip_url) + '">打包 (.zip)</a>' : '') +
       '</div>';
   }
 
   for (const v of videos) {
     const posterAttr = (v.thumb_url && v.thumb_url !== v.preview_url) ? ' poster="' + esc(v.thumb_url) + '"' : '';
     html += '<div class="vbox"><video controls playsinline preload="metadata"' + posterAttr + ' src="' + esc(v.preview_url) + '"></video></div>' +
-      '<div class="acts"><a class="btn pri" href="' + esc(v.download_url) + '">保存最高画质无水印视频</a></div>';
+      '<div class="acts"><a class="btn pri" href="' + esc(v.download_url) + '">下载最高画质视频</a></div>';
   }
 
   if (images.length || lives.length) {
     const liveMap = new Map();
     lives.forEach(l => liveMap.set(l.pair_index, l));
-    html += '<div class="grid">';
+    html += '<div class="grid' + (images.length === 1 ? ' single' : '') + '">';
     images.forEach((im, idx) => {
       const lv = liveMap.get(im.index);
       const thumbSrc = im.thumb_url || im.preview_url;
       const loadMode = idx < 6 ? 'eager' : 'lazy';
       html += '<div class="item">' +
         '<div class="thumb" data-idx="' + idx + '">' +
-        '<img loading="' + loadMode + '" decoding="async" src="' + esc(thumbSrc) + '" onload="this.classList.add(\'loaded\')" onerror="this.classList.add(\'loaded\')" alt="">' +
-        '<span class="tag">#' + (idx + 1) + '</span></div>' +
+        '<img loading="' + loadMode + '" decoding="async" src="' + esc(thumbSrc) + '" onload="this.classList.add(\'loaded\');this.parentElement.classList.add(\'done\')" onerror="this.classList.add(\'loaded\');this.parentElement.classList.add(\'done\',\'broken\')" alt="">' +
+        '<div class="thumb-err"><span>预览加载失败</span><span style="font-size:11px;opacity:.75">点击重试</span></div>' +
+        '<span class="tag">#' + (idx + 1) + '</span>' +
+        (lv ? '<span class="tag live">实况</span>' : '') +
+        '<span class="zoom-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg></span></div>' +
         '<div class="item-ft">' +
-        '<a class="btn pri" href="' + esc(im.download_url) + '">保存无损原图</a>' +
-        (lv ? '<a class="btn" href="' + esc(lv.download_url) + '">实况视频</a>' : '') +
+        '<a class="btn pri" href="' + esc(im.download_url) + '">下载无损原图</a>' +
+        (lv ? '<a class="btn" href="' + esc(lv.download_url) + '">下载实况视频</a>' : '') +
         '</div></div>';
     });
     if (!images.length && lives.length) {
       lives.forEach((lv, idx) => {
-        html += '<div class="item"><div class="item-ft"><a class="btn pri" href="' + esc(lv.download_url) + '">实况视频 #' + (idx + 1) + '</a></div></div>';
+        html += '<div class="item"><div class="item-ft"><a class="btn pri" href="' + esc(lv.download_url) + '">下载实况视频 #' + (idx + 1) + '</a></div></div>';
       });
     }
     html += '</div>';
@@ -766,9 +867,24 @@ function renderResult(d) {
 
   card.innerHTML = html;
   card.style.display = 'block';
+  card.classList.remove('anim');
+  void card.offsetWidth;
+  card.classList.add('anim');
 
   card.querySelectorAll('.thumb').forEach(el => {
-    el.addEventListener('click', () => showLightbox(Number(el.dataset.idx || 0)));
+    el.addEventListener('click', () => {
+      if (el.classList.contains('broken')) {
+        const img = el.querySelector('img');
+        if (img && img.src) {
+          const base = img.src.replace(/([?&])_r=\d+/, '').replace(/[?&]$/, '');
+          el.classList.remove('broken', 'done');
+          img.classList.remove('loaded');
+          img.src = base + (base.includes('?') ? '&' : '?') + '_r=' + Date.now();
+        }
+        return;
+      }
+      showLightbox(Number(el.dataset.idx || 0));
+    });
   });
 
   const saveBtn = $('saveLocalBtn');
@@ -781,7 +897,7 @@ function renderResult(d) {
         if (!r.ok || !res.ok) {
           showErr(res.error || '保存失败');
           saveBtn.disabled = false;
-          saveBtn.textContent = '📥 一键全部存进相册';
+          saveBtn.textContent = '存进手机相册';
           return;
         }
         saveBtn.textContent = '已存进相册 ✓ (' + res.saved + '/' + res.total + ')';
@@ -790,11 +906,18 @@ function renderResult(d) {
       } catch (e) {
         showErr('保存请求失败: ' + e.message);
         saveBtn.disabled = false;
-        saveBtn.textContent = '📥 一键全部存进相册';
+        saveBtn.textContent = '存进手机相册';
       }
     });
   }
 }
+
+document.addEventListener('keydown', e => {
+  if (!$('lb').classList.contains('open')) return;
+  if (e.key === 'Escape') { $('lb').classList.remove('open'); $('lbImg').src = ''; }
+  else if (e.key === 'ArrowLeft') showLightbox(lbIdx - 1);
+  else if (e.key === 'ArrowRight') showLightbox(lbIdx + 1);
+});
 
 $('lbClose').addEventListener('click', () => { $('lb').classList.remove('open'); $('lbImg').src = ''; });
 $('lbPrev').addEventListener('click', e => { e.stopPropagation(); showLightbox(lbIdx - 1); });
