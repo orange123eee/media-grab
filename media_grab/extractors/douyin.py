@@ -198,6 +198,102 @@ def parse_douyin_payload(data: Dict[str, Any], fallback_id: str, config: Config)
     )
 
 
+import threading
+import time
+
+_DOUYIN_FEED_URLS = (
+    "https://api5-normal-c-hl.amemv.com/aweme/v1/feed/?aweme_id={aweme_id}&aid=1128",
+    "https://aweme.snssdk.com/aweme/v1/feed/?aweme_id={aweme_id}&aid=1128",
+)
+_TTWID_REGISTER_URL = "https://ttwid.bytedance.com/ttwid/union/register/"
+_TTWID_TTL_SECONDS = 6 * 3600
+_TTWID_LOCK = threading.Lock()
+_TTWID_CACHE: Dict[str, Any] = {"value": "", "expires_at": 0.0}
+
+
+def _has_aweme_item(data: Any) -> bool:
+    return bool(data and _find_aweme_item(data))
+
+
+def _merge_cookie_header(existing_cookie: str, name: str, value: str) -> str:
+    """Append name=value to a Cookie header string unless already present."""
+    if not existing_cookie:
+        return f"{name}={value}"
+    if re.search(rf"(?:^|;\s*){re.escape(name)}=", existing_cookie):
+        return existing_cookie
+    return f"{existing_cookie.rstrip('; ')}; {name}={value}"
+
+
+def _register_ttwid(config: Config) -> str:
+    """Register an anonymous ttwid cookie for iesdouyin SSR share pages."""
+    import urllib.request
+    from ..http_client import MOBILE_UA
+
+    payload = json.dumps(
+        {
+            "region": "cn",
+            "aid": 1128,
+            "needFid": False,
+            "service": "www.iesdouyin.com",
+            "migrate_info": {"ticket": "", "source": "node"},
+            "cbUrlProtocol": "https",
+            "union": True,
+        }
+    ).encode("utf-8")
+    timeout = max(5, min(int(getattr(config, "timeout", 25) or 25), 10))
+    req = urllib.request.Request(
+        _TTWID_REGISTER_URL,
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": MOBILE_UA},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            set_cookies = resp.headers.get_all("Set-Cookie") or []
+    except Exception:
+        return ""
+
+    for sc in set_cookies:
+        pair = sc.split(";", 1)[0].strip()
+        if pair.startswith("ttwid="):
+            return pair.split("=", 1)[1].strip()
+    return ""
+
+
+def _get_anonymous_ttwid(config: Config, force_refresh: bool = False) -> str:
+    """Return a cached anonymous ttwid cookie value if available."""
+    now = time.time()
+    with _TTWID_LOCK:
+        cached = str(_TTWID_CACHE.get("value") or "")
+        if cached and not force_refresh and now < float(_TTWID_CACHE.get("expires_at") or 0.0):
+            return cached
+
+    val = _register_ttwid(config)
+    if val:
+        with _TTWID_LOCK:
+            _TTWID_CACHE["value"] = val
+            _TTWID_CACHE["expires_at"] = time.time() + _TTWID_TTL_SECONDS
+    return val
+
+
+def _fetch_aweme_from_feed(aweme_id: str, client: HttpClient) -> Optional[Dict[str, Any]]:
+    """Fetch exact matching aweme item from Douyin's mobile feed API."""
+    target_id = str(aweme_id)
+    for template in _DOUYIN_FEED_URLS:
+        feed_url = template.format(aweme_id=target_id)
+        try:
+            feed_resp = client.get(feed_url, mobile=True, follow_redirects=True)
+            payload = json.loads(feed_resp.text())
+        except Exception:
+            continue
+        aweme_list = payload.get("aweme_list") if isinstance(payload, dict) else None
+        if not isinstance(aweme_list, list):
+            continue
+        for item in aweme_list:
+            if isinstance(item, dict) and str(item.get("aweme_id") or "") == target_id:
+                return {"aweme_detail": item}
+    return None
+
+
 def extract_douyin(url: str, client: HttpClient, config: Config) -> ExtractResult:
     """Fetch Douyin share page and extract highest-quality watermark-free media."""
     resp = client.get(url, mobile=True, follow_redirects=True)
@@ -205,15 +301,44 @@ def extract_douyin(url: str, client: HttpClient, config: Config) -> ExtractResul
     data = _parse_douyin_json(html)
 
     aweme_id = _extract_aweme_id(resp.url) or _extract_aweme_id(url)
-    if not data and aweme_id:
+    if not _has_aweme_item(data) and aweme_id and "iesdouyin.com" not in (resp.url or "").lower():
         share_url = f"https://www.iesdouyin.com/share/video/{aweme_id}/"
-        resp2 = client.get(share_url, mobile=True, follow_redirects=True)
-        html = resp2.text()
-        data = _parse_douyin_json(html)
+        try:
+            resp2 = client.get(share_url, mobile=True, follow_redirects=True)
+            html = resp2.text()
+            cand = _parse_douyin_json(html)
+            if _has_aweme_item(cand) or not data:
+                data = cand
+        except Exception:
+            pass
 
-    if not data:
+    if not _has_aweme_item(data) and aweme_id:
+        feed_data = _fetch_aweme_from_feed(aweme_id, client)
+        if feed_data:
+            data = feed_data
+
+    if not _has_aweme_item(data) and aweme_id:
+        base_share = resp.url.split("?", 1)[0] if "iesdouyin.com" in (resp.url or "").lower() else f"https://www.iesdouyin.com/share/video/{aweme_id}/"
+        cookie_fn = getattr(client, "cookie_for_url", None)
+        existing_cookie = cookie_fn(base_share) if callable(cookie_fn) else ""
+        if not re.search(r"(?:^|;\s*)ttwid=", existing_cookie):
+            ttwid = _get_anonymous_ttwid(config)
+            if ttwid:
+                try:
+                    hdrs = {"Cookie": _merge_cookie_header(existing_cookie, "ttwid", ttwid)}
+                    resp3 = client.get(base_share, headers=hdrs, mobile=True, follow_redirects=True)
+                    html = resp3.text()
+                    cand = _parse_douyin_json(html)
+                    if _has_aweme_item(cand) or not data:
+                        data = cand
+                except Exception:
+                    pass
+
+    if not _has_aweme_item(data):
         if any(k in html for k in ("验证码", "安全验证", "captcha", "waf")):
             raise ExtractionError("抖音触发了安全验证（滑块/风控），请在 config.json 配置 douyin_cookie 后重试。")
+        if data:
+            raise ExtractionError("未在页面数据中找到作品详情，可能是接口结构已调整或作品已失效。")
         raise ExtractionError("未能从抖音分享页提取作品数据，请检查链接是否有效或已设为私密。")
 
     return parse_douyin_payload(data, aweme_id, config)
