@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, quote, urlparse
 
 from . import android
@@ -47,7 +47,7 @@ MANIFEST_JSON = json.dumps(
     ensure_ascii=False,
 )
 
-SW_JS = """const CACHE_NAME = 'media-grab-shell-v6';
+SW_JS = """const CACHE_NAME = 'media-grab-shell-v7';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg'];
 const SW_OFFLINE_HTML = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="background:#0b0e14;color:#eef2f8;font-family:sans-serif;padding:24px;line-height:1.6"><h3>本地 Termux 服务被系统暂停</h3><p style="color:#9aa7bd">正在自动检测并恢复连接；若 3 秒后仍未跳转，请点下方按钮唤起 Termux 后切回本页（建议在系统设置将 Termux 省电策略设为「无限制」）：</p><p><a href="intent://#Intent;package=com.termux;end" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;border-radius:10px;text-decoration:none">⚡ 一键唤醒 Termux 服务</a> <button onclick="location.replace(\\'/\\')" style="padding:12px 16px;background:#1e2636;color:#eef2f8;border:1px solid #334155;border-radius:10px;margin-left:8px">立即刷新</button></p><script>function p(){fetch("/api/config",{cache:"no-store"}).then(function(r){if(r.ok)location.replace("/")}).catch(function(){})}p();setInterval(p,1200);document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible")p()})</script></body>';
 
@@ -257,6 +257,12 @@ INDEX_HTML = r"""<!doctype html>
   .err.show { display: block; }
   .err button { min-height: 32px; padding: 0 10px; font-size: 12px; margin-top: 8px; }
   .meta { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 11px; }
+  .meta-main { flex: 1; min-width: 0; }
+  .copy-btn {
+    min-height: 30px; padding: 0 10px; border-radius: 9px; font-size: 12px; font-weight: 500;
+    background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .11); color: var(--muted); flex-shrink: 0;
+  }
+  .copy-btn:active { color: #fff; }
   .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: #8ac4ff; margin-right: 7px; vertical-align: 1px; letter-spacing: .2px; }
   .badge.xhs { background: rgba(255, 36, 66, .20); color: #ff7086; }
   .badge.dy { background: linear-gradient(135deg, rgba(37, 244, 238, .18), rgba(254, 44, 85, .18)); color: #75f4ef; }
@@ -264,12 +270,25 @@ INDEX_HTML = r"""<!doctype html>
   .title { font-weight: 600; font-size: 15.5px; line-height: 1.45; word-break: break-word; }
   .author { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
   .acts { display: flex; gap: 8px; margin: 10px 0 14px; flex-wrap: wrap; }
+  .sel-bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+    margin: 4px 0 10px; padding: 8px 11px; border-radius: 12px;
+    background: rgba(255, 255, 255, .035); border: 1px solid var(--line);
+  }
+  .sel-info { font-size: 12.5px; color: var(--muted); }
+  .sel-info b { color: #93c5fd; font-weight: 600; }
+  .sel-acts { display: flex; gap: 6px; align-items: center; }
+  .sel-btn {
+    min-height: 30px; padding: 0 10px; border-radius: 8px; font-size: 12px; font-weight: 500;
+    background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .1); color: var(--text);
+  }
   .vbox { background: #000; border-radius: 14px; overflow: hidden; margin-bottom: 10px; border: 1px solid var(--line); box-shadow: 0 6px 20px rgba(0, 0, 0, .36); }
   .vbox video { width: 100%; max-height: 62vh; display: block; background: #000; }
   .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .grid.single { grid-template-columns: minmax(0, 1fr); }
   @media (min-width: 560px) { .grid:not(.single) { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-  .item { background: #0d1119; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; }
+  .item { background: #0d1119; border: 1.5px solid var(--line); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; transition: border-color .16s, box-shadow .16s; }
+  .item.sel { border-color: var(--accent-hi); box-shadow: 0 0 0 1px rgba(59, 130, 246, .35), 0 6px 18px rgba(37, 99, 235, .18); }
   .thumb {
     position: relative; aspect-ratio: 4/5; overflow: hidden; cursor: zoom-in;
     background: linear-gradient(110deg, #121722 25%, #1b2232 45%, #121722 65%);
@@ -287,8 +306,21 @@ INDEX_HTML = r"""<!doctype html>
     gap: 4px; font-size: 12px; color: var(--muted); background: rgba(13, 17, 25, .92); cursor: pointer;
   }
   .thumb.broken .thumb-err { display: flex; }
-  .tag { position: absolute; left: 7px; top: 7px; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 7px; background: rgba(0,0,0,.62); color: #fff; backdrop-filter: blur(6px); }
-  .tag.live { left: auto; right: 7px; background: rgba(37, 99, 235, .78); }
+  .tags-tl { position: absolute; left: 7px; top: 7px; display: flex; gap: 5px; z-index: 2; pointer-events: none; }
+  .tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 7px; background: rgba(0,0,0,.62); color: #fff; backdrop-filter: blur(6px); }
+  .tag.live { background: rgba(37, 99, 235, .82); }
+  .pick-btn {
+    position: absolute; right: 7px; top: 7px; width: 28px; height: 28px; min-height: 28px; padding: 0;
+    border-radius: 999px; border: 1.5px solid rgba(255, 255, 255, .74);
+    background: rgba(8, 12, 20, .54); backdrop-filter: blur(5px);
+    color: rgba(255, 255, 255, .42); font-size: 13px; font-weight: 700; z-index: 3;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .pick-btn::after { content: ""; position: absolute; inset: -8px; }
+  .pick-btn.on {
+    background: linear-gradient(135deg, var(--accent), var(--accent-hi));
+    border-color: #93c5fd; color: #fff; box-shadow: 0 2px 10px rgba(37, 99, 235, .48);
+  }
   .zoom-ic {
     position: absolute; right: 7px; bottom: 7px; width: 24px; height: 24px; border-radius: 7px;
     background: rgba(0, 0, 0, .52); color: rgba(255, 255, 255, .86); backdrop-filter: blur(4px);
@@ -360,7 +392,12 @@ INDEX_HTML = r"""<!doctype html>
   }
   .lb-nav.prev { left: 4px; }
   .lb-nav.next { right: 4px; }
-  .lb-ft { width: 100%; max-width: 380px; display: flex; gap: 8px; }
+  .lb-ft { width: 100%; max-width: 440px; display: flex; gap: 8px; }
+  .lb-pick {
+    min-height: 44px; padding: 0 14px; border-radius: 12px; font-size: 13.5px; font-weight: 600;
+    background: rgba(255, 255, 255, .09); border: 1px solid rgba(255, 255, 255, .2); color: #e2e8f0; flex-shrink: 0;
+  }
+  .lb-pick.on { background: rgba(37, 99, 235, .32); border-color: #60a5fa; color: #dbeafe; }
   .toast {
     position: fixed; left: 50%; bottom: calc(22px + env(safe-area-inset-bottom)); transform: translate(-50%, 16px);
     background: rgba(20, 26, 38, .96); border: 1px solid rgba(255,255,255,.15);
@@ -479,6 +516,7 @@ INDEX_HTML = r"""<!doctype html>
     <button type="button" class="lb-nav next" id="lbNext">›</button>
   </div>
   <div class="lb-ft">
+    <button type="button" id="lbPickBtn" class="lb-pick" style="display:none">选中此图</button>
     <a class="btn pri" id="lbDl" href="#">下载本张无损原图</a>
   </div>
 </div>
@@ -496,6 +534,8 @@ let reconnectTimer = null;
 let currentJob = null;
 let lbImages = [];
 let lbIdx = 0;
+let lbIsSelected = null;
+let lbTogglePick = null;
 let toastTimer = null;
 let timerId = null;
 
@@ -748,6 +788,12 @@ async function runExtract(text) {
     const found = clientExtractUrl(val);
     saveHistory(d, (found && found.url) || val);
     renderResult(d);
+    requestAnimationFrame(() => {
+      const card = $('resCard');
+      if (card && card.getBoundingClientRect().top > window.innerHeight * 0.62) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
     const sec = ((performance.now() - t0) / 1000).toFixed(2);
     setHint('解析完成（耗时 ' + sec + 's），预览已开启加速，保存将直接下载无损原图。');
     showToast('解析成功 (' + sec + 's)');
@@ -784,6 +830,17 @@ function showLightbox(idx) {
   $('lbDl').href = im.download_url;
   const thumb = im.thumb_url || im.preview_url;
   const qEl = $('lbQuality');
+  const pkEl = $('lbPickBtn');
+  if (pkEl) {
+    if (lbImages.length > 1 && typeof lbIsSelected === 'function') {
+      const on = !!lbIsSelected(im.id);
+      pkEl.style.display = '';
+      pkEl.textContent = on ? '已选中 ✓' : '选中此图';
+      pkEl.classList.toggle('on', on);
+    } else {
+      pkEl.style.display = 'none';
+    }
+  }
   $('lbImg').src = thumb;
   if (im.preview_url && im.preview_url !== thumb) {
     if (qEl) { qEl.textContent = '高清预览 · 加载原图中'; qEl.className = 'lb-qual'; }
@@ -813,21 +870,39 @@ function renderResult(d) {
   const images = d.assets.filter(a => a.kind === 'image');
   const lives = d.assets.filter(a => a.kind === 'live_video');
   lbImages = images;
+  const selectedImgIds = new Set();
+  const liveMap = new Map();
+  lives.forEach(l => liveMap.set(l.pair_index, l));
+
+  function getSelectedAssetIds() {
+    const ids = [];
+    for (const im of images) {
+      if (!selectedImgIds.has(im.id)) continue;
+      ids.push(im.id);
+      const lv = liveMap.get(im.index);
+      if (lv) ids.push(lv.id);
+    }
+    return ids;
+  }
 
   const counts = [];
   if (videos.length) counts.push(videos.length + ' 个高清视频');
   if (images.length) counts.push(images.length + ' 张无水印原图');
   if (lives.length) counts.push(lives.length + ' 个实况视频');
 
-  let html = '<div class="meta"><div>' +
+  let html = '<div class="meta"><div class="meta-main">' +
     '<div class="title"><span class="badge ' + badgeCls + '">' + esc(plat) + '</span>' + esc(d.title) + '</div>' +
     '<div class="author">' + (d.author ? esc(d.author) + ' · ' : '') + esc(counts.join(' · ')) + '</div>' +
-    '</div></div>';
+    '</div>' +
+    (d.title ? '<button type="button" class="copy-btn" id="copyTitleBtn">复制文案</button>' : '') +
+    '</div>';
 
   if (d.assets.length > 0) {
+    const defaultSaveTxt = d.assets.length > 1 ? '一键保存全部到相册' : '保存到相册';
     html += '<div class="acts">' +
-      '<button type="button" class="pri" id="saveLocalBtn">存进手机相册</button>' +
-      (d.assets.length > 1 ? '<a class="btn" href="' + esc(d.zip_url) + '">打包 (.zip)</a>' : '') +
+      '<button type="button" class="pri" id="saveLocalBtn">' + defaultSaveTxt + '</button>' +
+      (images.length > 1 ? '<button type="button" class="sec" id="saveAllLocalBtn" style="display:none">保存全部</button>' : '') +
+      (d.assets.length > 1 ? '<a class="btn" id="zipBtn" href="' + esc(d.zip_url) + '">打包全部 (.zip)</a>' : '') +
       '</div>';
   }
 
@@ -838,19 +913,27 @@ function renderResult(d) {
   }
 
   if (images.length || lives.length) {
-    const liveMap = new Map();
-    lives.forEach(l => liveMap.set(l.pair_index, l));
+    if (images.length > 1) {
+      html += '<div class="sel-bar" id="selBar">' +
+        '<span class="sel-info" id="selInfo">已选 <b>0</b> / ' + images.length + ' 张（默认保存全部）</span>' +
+        '<div class="sel-acts">' +
+        '<button type="button" class="sel-btn" id="selAllBtn">全选</button>' +
+        '<button type="button" class="sel-btn" id="selInvBtn">反选</button>' +
+        '<button type="button" class="sel-btn" id="selClrBtn" style="display:none">清空</button>' +
+        '</div></div>';
+    }
     html += '<div class="grid' + (images.length === 1 ? ' single' : '') + '">';
     images.forEach((im, idx) => {
       const lv = liveMap.get(im.index);
       const thumbSrc = im.thumb_url || im.preview_url;
       const loadMode = idx < 6 ? 'eager' : 'lazy';
-      html += '<div class="item">' +
+      html += '<div class="item" data-id="' + esc(im.id) + '">' +
         '<div class="thumb" data-idx="' + idx + '">' +
         '<img loading="' + loadMode + '" decoding="async" src="' + esc(thumbSrc) + '" onload="this.classList.add(\'loaded\');this.parentElement.classList.add(\'done\')" onerror="this.classList.add(\'loaded\');this.parentElement.classList.add(\'done\',\'broken\')" alt="">' +
         '<div class="thumb-err"><span>预览加载失败</span><span style="font-size:11px;opacity:.75">点击重试</span></div>' +
-        '<span class="tag">#' + (idx + 1) + '</span>' +
-        (lv ? '<span class="tag live">实况</span>' : '') +
+        '<div class="tags-tl"><span class="tag">#' + (idx + 1) + '</span>' +
+        (lv ? '<span class="tag live">实况</span>' : '') + '</div>' +
+        (images.length > 1 ? '<button type="button" class="pick-btn" data-id="' + esc(im.id) + '" aria-label="选择第 ' + (idx + 1) + ' 张">✓</button>' : '') +
         '<span class="zoom-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg></span></div>' +
         '<div class="item-ft">' +
         '<a class="btn pri" href="' + esc(im.download_url) + '">下载无损原图</a>' +
@@ -871,6 +954,62 @@ function renderResult(d) {
   void card.offsetWidth;
   card.classList.add('anim');
 
+  let saving = false;
+  function defaultMainSaveText() {
+    if (images.length > 1 && selectedImgIds.size > 0 && selectedImgIds.size < images.length) {
+      return '保存已选到相册 (' + selectedImgIds.size + ')';
+    }
+    return d.assets.length > 1 ? '一键保存全部到相册' : '保存到相册';
+  }
+
+  function syncSelectionUI() {
+    const n = selectedImgIds.size;
+    const partial = images.length > 1 && n > 0 && n < images.length;
+    card.querySelectorAll('.item[data-id]').forEach(it => {
+      it.classList.toggle('sel', selectedImgIds.has(it.dataset.id));
+    });
+    card.querySelectorAll('.pick-btn').forEach(btn => {
+      btn.classList.toggle('on', selectedImgIds.has(btn.dataset.id));
+    });
+    const infoEl = $('selInfo');
+    if (infoEl) {
+      if (n === 0) infoEl.innerHTML = '已选 <b>0</b> / ' + images.length + ' 张（默认保存全部）';
+      else if (n === images.length) infoEl.innerHTML = '已选 <b>全部 ' + images.length + '</b> 张';
+      else infoEl.innerHTML = '已选 <b>' + n + '</b> / ' + images.length + ' 张';
+    }
+    const clrBtn = $('selClrBtn');
+    if (clrBtn) clrBtn.style.display = n > 0 ? '' : 'none';
+    const saveBtnEl = $('saveLocalBtn');
+    const saveAllEl = $('saveAllLocalBtn');
+    if (saveBtnEl && !saving) {
+      saveBtnEl.disabled = false;
+      saveBtnEl.textContent = defaultMainSaveText();
+    }
+    if (saveAllEl && !saving) {
+      saveAllEl.disabled = false;
+      saveAllEl.style.display = partial ? '' : 'none';
+      saveAllEl.textContent = '保存全部';
+    }
+    const zipEl = $('zipBtn');
+    if (zipEl) {
+      if (partial) {
+        zipEl.href = d.zip_url + '?ids=' + encodeURIComponent(getSelectedAssetIds().join(','));
+        zipEl.textContent = '打包已选 (' + n + ')';
+      } else {
+        zipEl.href = d.zip_url;
+        zipEl.textContent = '打包全部 (.zip)';
+      }
+    }
+  }
+
+  lbIsSelected = id => selectedImgIds.has(id);
+  lbTogglePick = id => {
+    if (selectedImgIds.has(id)) selectedImgIds.delete(id);
+    else selectedImgIds.add(id);
+    syncSelectionUI();
+    return selectedImgIds.has(id);
+  };
+
   card.querySelectorAll('.thumb').forEach(el => {
     el.addEventListener('click', () => {
       if (el.classList.contains('broken')) {
@@ -887,27 +1026,115 @@ function renderResult(d) {
     });
   });
 
+  card.querySelectorAll('.pick-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      if (!id) return;
+      if (selectedImgIds.has(id)) selectedImgIds.delete(id);
+      else selectedImgIds.add(id);
+      syncSelectionUI();
+    });
+  });
+
+  if ($('selAllBtn')) {
+    $('selAllBtn').addEventListener('click', () => {
+      images.forEach(im => selectedImgIds.add(im.id));
+      syncSelectionUI();
+    });
+  }
+  if ($('selInvBtn')) {
+    $('selInvBtn').addEventListener('click', () => {
+      images.forEach(im => {
+        if (selectedImgIds.has(im.id)) selectedImgIds.delete(im.id);
+        else selectedImgIds.add(im.id);
+      });
+      syncSelectionUI();
+    });
+  }
+  if ($('selClrBtn')) {
+    $('selClrBtn').addEventListener('click', () => {
+      selectedImgIds.clear();
+      syncSelectionUI();
+    });
+  }
+
+  const copyBtn = $('copyTitleBtn');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      const txt = d.title || '';
+      let ok = false;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(txt);
+          ok = true;
+        }
+      } catch (e) {}
+      if (!ok) {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = txt;
+          ta.readOnly = true;
+          ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+          document.body.appendChild(ta);
+          ta.select();
+          ok = document.execCommand('copy');
+          ta.remove();
+        } catch (e) {}
+      }
+      showToast(ok ? '已复制文案' : '请长按标题手动复制');
+    });
+  }
+
+  async function runSave(btn, assetIds, donePrefix) {
+    if (saving || !btn) return;
+    saving = true;
+    const saveBtnEl = $('saveLocalBtn');
+    const saveAllEl = $('saveAllLocalBtn');
+    if (saveBtnEl) saveBtnEl.disabled = true;
+    if (saveAllEl) saveAllEl.disabled = true;
+    btn.textContent = assetIds ? '正在保存已选原图…' : '正在保存全部到相册…';
+    try {
+      const reqOpts = { method: 'POST' };
+      if (assetIds) {
+        reqOpts.headers = { 'Content-Type': 'application/json' };
+        reqOpts.body = JSON.stringify({ asset_ids: assetIds });
+      }
+      const { res: r, data: res } = await fetchJsonWithRetry('/api/save/' + encodeURIComponent(d.job_id), reqOpts, 60000, 1);
+      if (!r.ok || !res.ok) {
+        showErr(res.error || '保存失败');
+        if (saveBtnEl) { saveBtnEl.disabled = false; saveBtnEl.textContent = defaultMainSaveText(); }
+        if (saveAllEl) { saveAllEl.disabled = false; saveAllEl.textContent = '保存全部'; }
+        return;
+      }
+      if (saveBtnEl) saveBtnEl.disabled = false;
+      if (saveAllEl) saveAllEl.disabled = false;
+      btn.textContent = donePrefix + ' ✓ (' + res.saved + '/' + res.total + ')';
+      const other = btn === saveBtnEl ? saveAllEl : saveBtnEl;
+      if (other) other.textContent = other === saveBtnEl ? defaultMainSaveText() : '保存全部';
+      setHint('已直接保存到 ' + res.dir + ' 并刷新相册。');
+      showToast('已存进相册 (' + res.saved + '/' + res.total + ')');
+    } catch (e) {
+      showErr('保存请求失败: ' + e.message);
+      if (saveBtnEl) { saveBtnEl.disabled = false; saveBtnEl.textContent = defaultMainSaveText(); }
+      if (saveAllEl) { saveAllEl.disabled = false; saveAllEl.textContent = '保存全部'; }
+    } finally {
+      saving = false;
+    }
+  }
+
   const saveBtn = $('saveLocalBtn');
   if (saveBtn) {
-    saveBtn.addEventListener('click', async () => {
-      saveBtn.disabled = true;
-      saveBtn.textContent = '正在下载无损原图到相册…';
-      try {
-        const { res: r, data: res } = await fetchJsonWithRetry('/api/save/' + encodeURIComponent(d.job_id), { method: 'POST' }, 60000, 1);
-        if (!r.ok || !res.ok) {
-          showErr(res.error || '保存失败');
-          saveBtn.disabled = false;
-          saveBtn.textContent = '存进手机相册';
-          return;
-        }
-        saveBtn.textContent = '已存进相册 ✓ (' + res.saved + '/' + res.total + ')';
-        setHint('已直接保存到 ' + res.dir + ' 并刷新相册。');
-        showToast('已存进相册 (' + res.saved + '/' + res.total + ')');
-      } catch (e) {
-        showErr('保存请求失败: ' + e.message);
-        saveBtn.disabled = false;
-        saveBtn.textContent = '存进手机相册';
-      }
+    saveBtn.addEventListener('click', () => {
+      const partial = images.length > 1 && selectedImgIds.size > 0 && selectedImgIds.size < images.length;
+      const ids = partial ? getSelectedAssetIds() : null;
+      runSave(saveBtn, ids, partial ? '已存已选' : '已存进相册');
+    });
+  }
+  const saveAllBtn = $('saveAllLocalBtn');
+  if (saveAllBtn) {
+    saveAllBtn.addEventListener('click', () => {
+      runSave(saveAllBtn, null, '已全部保存');
     });
   }
 }
@@ -920,6 +1147,16 @@ document.addEventListener('keydown', e => {
 });
 
 $('lbClose').addEventListener('click', () => { $('lb').classList.remove('open'); $('lbImg').src = ''; });
+$('lbPickBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  if (!lbImages.length || typeof lbTogglePick !== 'function') return;
+  const im = lbImages[lbIdx];
+  if (!im) return;
+  const on = !!lbTogglePick(im.id);
+  const pkEl = $('lbPickBtn');
+  pkEl.textContent = on ? '已选中 ✓' : '选中此图';
+  pkEl.classList.toggle('on', on);
+});
 $('lbPrev').addEventListener('click', e => { e.stopPropagation(); showLightbox(lbIdx - 1); });
 $('lbNext').addEventListener('click', e => { e.stopPropagation(); showLightbox(lbIdx + 1); });
 $('lb').addEventListener('click', e => { if (e.target === $('lb') || e.target === $('lbStage')) { $('lb').classList.remove('open'); $('lbImg').src = ''; } });
@@ -959,6 +1196,7 @@ $('pasteBtn').addEventListener('click', async () => {
   } catch (e) {}
   $('inp').value = '';
   updateDetectBar();
+  $('inp').scrollIntoView({ behavior: 'smooth', block: 'center' });
   $('inp').focus();
   setHint('当前浏览器限制网页自动读剪贴板：请长按输入框点「粘贴」，粘贴后会自动开始提取。');
 });
@@ -1266,7 +1504,22 @@ class JobStore:
             self._thumb_inflight.clear()
 
 
-def _build_zip_bytes(job: StoredJob, store: JobStore, client: HttpClient, config: Config) -> Tuple[str, bytes]:
+def _filter_job_assets(job: StoredJob, selected_ids: Optional[Sequence[str]]) -> List[StoredAsset]:
+    """Filter job assets to requested IDs, or return all when selected_ids is None."""
+    if selected_ids is None:
+        return list(job.assets)
+    wanted = {str(x).strip() for x in selected_ids if str(x).strip()}
+    return [sa for sa in job.assets if sa.asset_id in wanted]
+
+
+def _build_zip_bytes(
+    job: StoredJob,
+    store: JobStore,
+    client: HttpClient,
+    config: Config,
+    target_assets: Optional[List[StoredAsset]] = None,
+) -> Tuple[str, bytes]:
+    assets = list(job.assets) if target_assets is None else list(target_assets)
     buf = io.BytesIO()
     files: List[Tuple[int, str, bytes]] = []
 
@@ -1281,9 +1534,9 @@ def _build_zip_bytes(job: StoredJob, store: JobStore, client: HttpClient, config
         )
         return sa.index, f"{sa.stem}{ext}", data
 
-    workers = min(config.max_workers, max(1, len(job.assets)))
+    workers = min(config.max_workers, max(1, len(assets)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = [pool.submit(_fetch, sa) for sa in job.assets]
+        futs = [pool.submit(_fetch, sa) for sa in assets]
         for fut in as_completed(futs):
             files.append(fut.result())
 
@@ -1293,7 +1546,8 @@ def _build_zip_bytes(job: StoredJob, store: JobStore, client: HttpClient, config
             zf.writestr(fname, data)
 
     title = sanitize_filename(job.result.title, fallback=job.result.platform, max_len=36)
-    zip_name = f"{job.result.platform}_{title}_{job.result.item_id}.zip"
+    suffix = f"_sel{len(assets)}" if target_assets is not None and len(assets) < len(job.assets) else ""
+    zip_name = f"{job.result.platform}_{title}_{job.result.item_id}{suffix}.zip"
     return zip_name, buf.getvalue()
 
 
@@ -1312,7 +1566,14 @@ def _save_web_config(updates: Dict[str, Any], config_dir: Optional[Path] = None)
     return load_config(cfg_dir)
 
 
-def _save_job_to_output(job: StoredJob, store: JobStore, client: HttpClient, config: Config) -> Tuple[List[Path], List[str]]:
+def _save_job_to_output(
+    job: StoredJob,
+    store: JobStore,
+    client: HttpClient,
+    config: Config,
+    target_assets: Optional[List[StoredAsset]] = None,
+) -> Tuple[List[Path], List[str]]:
+    assets = list(job.assets) if target_assets is None else list(target_assets)
     saved: List[Path] = []
     errors: List[str] = []
 
@@ -1328,9 +1589,9 @@ def _save_job_to_output(job: StoredJob, store: JobStore, client: HttpClient, con
             mobile=sa.asset.mobile,
         )
 
-    workers = min(config.max_workers, max(1, len(job.assets)))
+    workers = min(config.max_workers, max(1, len(assets)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = {pool.submit(_dl, sa): sa for sa in job.assets}
+        futs = {pool.submit(_dl, sa): sa for sa in assets}
         for fut in as_completed(futs):
             sa = futs[fut]
             try:
@@ -1511,7 +1772,12 @@ def make_handler(state: WebAppState):
                 return
             if path.startswith("/api/zip/"):
                 job_id = path[len("/api/zip/") :]
-                self._handle_zip(job_id)
+                qs = parse_qs(parsed.query, keep_blank_values=True)
+                selected_ids: Optional[List[str]] = None
+                if "ids" in qs:
+                    raw_ids = ",".join(qs["ids"])
+                    selected_ids = [s.strip() for s in raw_ids.split(",") if s.strip()]
+                self._handle_zip(job_id, selected_ids=selected_ids)
                 return
 
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
@@ -1609,13 +1875,31 @@ def make_handler(state: WebAppState):
 
             if path.startswith("/api/save/"):
                 job_id = path[len("/api/save/") :]
+                try:
+                    payload = self._read_json()
+                except Exception:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "请求 JSON 格式有误"})
+                    return
+                if not isinstance(payload, dict):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "请求 JSON 格式有误"})
+                    return
                 job = state.store.get_job(job_id)
                 if not job:
                     self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "任务不存在或已过期，请重新提取"})
                     return
+                selected_ids: Optional[List[str]] = None
+                if payload.get("asset_ids") is not None:
+                    if not isinstance(payload["asset_ids"], list):
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "asset_ids 参数必须为数组"})
+                        return
+                    selected_ids = [str(x) for x in payload["asset_ids"]]
+                target_assets = _filter_job_assets(job, selected_ids)
+                if not target_assets:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "未选中任何有效文件"})
+                    return
                 cfg, client = state.client()
                 with state.busy():
-                    saved, errs = _save_job_to_output(job, state.store, client, cfg)
+                    saved, errs = _save_job_to_output(job, state.store, client, cfg, target_assets=target_assets)
                 if not saved:
                     self._send_json(HTTPStatus.BAD_GATEWAY, {"ok": False, "error": "; ".join(errs) or "保存失败"})
                     return
@@ -1624,7 +1908,7 @@ def make_handler(state: WebAppState):
                     {
                         "ok": True,
                         "saved": len(saved),
-                        "total": len(job.assets),
+                        "total": len(target_assets),
                         "dir": cfg.output_dir.name,
                         "errors": errs,
                     },
@@ -1759,15 +2043,19 @@ def make_handler(state: WebAppState):
                 if owns_slot and slot_ev is not None:
                     state.store.release_thumb_slot(sa.asset_id, slot_ev)
 
-        def _handle_zip(self, job_id: str) -> None:
+        def _handle_zip(self, job_id: str, selected_ids: Optional[Sequence[str]] = None) -> None:
             job = state.store.get_job(job_id)
             if not job:
                 self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "任务不存在或已过期，请重新提取"})
                 return
+            target_assets = _filter_job_assets(job, selected_ids)
+            if not target_assets:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "未选中可打包文件"})
+                return
             cfg, client = state.client()
             try:
                 with state.busy():
-                    zip_name, zip_bytes = _build_zip_bytes(job, state.store, client, cfg)
+                    zip_name, zip_bytes = _build_zip_bytes(job, state.store, client, cfg, target_assets=target_assets)
             except Exception as e:
                 self._send_json(HTTPStatus.BAD_GATEWAY, {"ok": False, "error": f"打包失败: {e}"})
                 return

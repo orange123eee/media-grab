@@ -281,10 +281,15 @@ class WebServerTests(unittest.TestCase):
         self.assertIn("decoding=\"async\"", idx_html)
         self.assertIn(".grid.single", idx_html)
         self.assertIn("lbQuality", idx_html)
+        self.assertIn("selBar", idx_html)
+        self.assertIn("pick-btn", idx_html)
+        self.assertIn("lbPickBtn", idx_html)
+        self.assertIn("saveAllLocalBtn", idx_html)
+        self.assertIn("copyTitleBtn", idx_html)
 
         _, _, sw_raw = self._req("/sw.js")
         sw_text = sw_raw.decode("utf-8")
-        self.assertIn("media-grab-shell-v6", sw_text)
+        self.assertIn("media-grab-shell-v7", sw_text)
         self.assertIn("SW_OFFLINE_HTML", sw_text)
         self.assertIn(".catch(() => null)", sw_text)
         self.assertNotIn("fetch(req,", sw_text)
@@ -354,6 +359,91 @@ class WebServerTests(unittest.TestCase):
             self.assertEqual(st2, 200)
             self.assertEqual(b2, webp2)
             self.assertEqual(opened_urls[-1], "https://fast-th.example/2.webp")
+
+    def test_selective_save_and_selective_zip(self):
+        fake_result = ExtractResult(
+            platform="x",
+            item_id="pick88",
+            title="多图选择测试",
+            author="tester",
+            assets=[
+                MediaAsset(kind="image", urls=["https://img.example/1.jpg"], default_ext=".jpg"),
+                MediaAsset(kind="image", urls=["https://img.example/2.jpg"], default_ext=".jpg"),
+                MediaAsset(kind="image", urls=["https://img.example/3.jpg"], default_ext=".jpg"),
+            ],
+        )
+        payloads = {
+            "https://img.example/1.jpg": b"\xff\xd8\xff\xe0" + b"ONE" * 500,
+            "https://img.example/2.jpg": b"\xff\xd8\xff\xe0" + b"TWO" * 500,
+            "https://img.example/3.jpg": b"\xff\xd8\xff\xe0" + b"THREE" * 500,
+        }
+
+        class FakeOpener:
+            def open(self, req, timeout=10):
+                return _FakeRawResp("image/jpeg", payloads[req.full_url])
+
+        with patch("media_grab.web.extract", return_value=fake_result):
+            st, _, raw = self._req("/api/extract", method="POST", body={"input": "https://x.com/tester/status/88"})
+        self.assertEqual(st, 200)
+        data = json.loads(raw.decode("utf-8"))
+        job_id = data["job_id"]
+        ids = [a["id"] for a in data["assets"]]
+
+        out_sel = self.cfg_dir / "DCIM_SEL"
+        out_all = self.cfg_dir / "DCIM_ALL"
+        from media_grab.config import Config
+
+        with (
+            patch("media_grab.web.load_config") as mock_cfg,
+            patch("urllib.request.build_opener", return_value=FakeOpener()),
+            patch("media_grab.web.android.scan_media") as mock_scan,
+        ):
+            mock_cfg.return_value = Config(output_dir=out_sel)
+            # Empty explicit selection must be rejected with 400.
+            est, _, eraw = self._req(f"/api/save/{job_id}", method="POST", body={"asset_ids": []})
+            self.assertEqual(est, 400)
+            self.assertFalse(json.loads(eraw.decode("utf-8"))["ok"])
+
+            # Selective save only persists assets 1 and 3.
+            sst, _, sraw = self._req(f"/api/save/{job_id}", method="POST", body={"asset_ids": [ids[0], ids[2]]})
+            self.assertEqual(sst, 200)
+            sdata = json.loads(sraw.decode("utf-8"))
+            self.assertEqual(sdata["saved"], 2)
+            self.assertEqual(sdata["total"], 2)
+            self.assertEqual(mock_scan.call_count, 1)
+            sel_contents = {p.read_bytes() for p in out_sel.iterdir()}
+            self.assertEqual(
+                sel_contents,
+                {payloads["https://img.example/1.jpg"], payloads["https://img.example/3.jpg"]},
+            )
+
+            # Selective ZIP only bundles requested IDs; invalid ID returns 400.
+            ezst, _, _ = self._req(f"/api/zip/{job_id}?ids=missing_id")
+            self.assertEqual(ezst, 400)
+
+            zst, _, zraw = self._req(f"/api/zip/{job_id}?ids={ids[0]},{ids[2]}")
+            self.assertEqual(zst, 200)
+            with zipfile.ZipFile(io.BytesIO(zraw)) as zf:
+                zip_contents = {zf.read(name) for name in zf.namelist()}
+            self.assertEqual(len(zip_contents), 2)
+            self.assertEqual(
+                zip_contents,
+                {payloads["https://img.example/1.jpg"], payloads["https://img.example/3.jpg"]},
+            )
+
+            # Omitting asset_ids / ?ids preserves save-all & zip-all behavior.
+            mock_cfg.return_value = Config(output_dir=out_all)
+            ast, _, araw = self._req(f"/api/save/{job_id}", method="POST")
+            self.assertEqual(ast, 200)
+            adata = json.loads(araw.decode("utf-8"))
+            self.assertEqual(adata["saved"], 3)
+            self.assertEqual(adata["total"], 3)
+            self.assertEqual(len(list(out_all.iterdir())), 3)
+
+            zall_st, _, zall_raw = self._req(f"/api/zip/{job_id}")
+            self.assertEqual(zall_st, 200)
+            with zipfile.ZipFile(io.BytesIO(zall_raw)) as zf:
+                self.assertEqual(len(zf.namelist()), 3)
 
 
 class OnDemandGateTests(unittest.TestCase):
