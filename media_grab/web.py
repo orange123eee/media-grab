@@ -11,6 +11,7 @@ import time
 import zipfile
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -44,6 +45,50 @@ MANIFEST_JSON = json.dumps(
     },
     ensure_ascii=False,
 )
+
+SW_JS = """const CACHE_NAME = 'media-grab-shell-v1';
+const SHELL_URLS = ['/', '/manifest.json', '/icon.svg'];
+
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_URLS)).catch(() => {})
+  );
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith('/api/')) return;
+
+  if (req.mode === 'navigate' || url.pathname === '/') {
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          if (res && res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE_NAME).then((c) => c.put('/', copy)).catch(() => {});
+          }
+          return res;
+        })
+        .catch(() => caches.match('/'))
+    );
+    return;
+  }
+
+  if (url.pathname === '/manifest.json' || url.pathname === '/icon.svg') {
+    event.respondWith(
+      fetch(req).catch(() => caches.match(url.pathname))
+    );
+  }
+});
+"""
 
 INDEX_HTML = r"""<!doctype html>
 <html lang="zh-CN">
@@ -112,11 +157,20 @@ INDEX_HTML = r"""<!doctype html>
   <div class="hd">
     <div>
       <h1>无水印提取</h1>
-      <div class="sub">抖音 · 小红书 ｜ 最高画质 · 零广告</div>
+      <div class="sub">抖音 · 小红书 ｜ 按需后台 · 关页自停</div>
     </div>
     <div style="display:flex;gap:6px;align-items:center">
       <button class="pill" id="stopBtn" type="button" style="display:none">关闭后台</button>
       <button class="pill" id="cfgBtn" type="button">Cookie 设置</button>
+    </div>
+  </div>
+
+  <div class="card" id="wakeBox" style="display:none;border-color:rgba(248,81,73,.45)">
+    <div style="font-weight:600;margin-bottom:4px">本地解析网关尚未连接</div>
+    <div class="sub" style="margin-bottom:10px">如果手机刚重启或还没有打开过 Termux，点下方按钮唤起 Termux 后切回本页即可自动恢复连接。</div>
+    <div class="row" style="margin-top:0">
+      <a class="btn pri" href="intent://#Intent;package=com.termux;end">⚡ 一键唤醒 Termux 服务</a>
+      <button type="button" id="retryConnBtn">重试连接</button>
     </div>
   </div>
 
@@ -181,6 +235,11 @@ function showErr(msg) {
   el.classList.add('show');
 }
 
+function showWakeBanner(show) {
+  const box = $('wakeBox');
+  if (box) box.style.display = show ? 'block' : 'none';
+}
+
 function setHint(msg) { $('hint').textContent = msg || ''; }
 
 async function runExtract(text) {
@@ -206,9 +265,11 @@ async function runExtract(text) {
       return;
     }
     currentJob = d;
+    showWakeBanner(false);
     renderResult(d);
     setHint('解析完成，可直接预览或保存到手机。');
   } catch (e) {
+    showWakeBanner(true);
     showErr('连接本地服务失败: ' + e.message);
     setHint('');
   } finally {
@@ -336,6 +397,7 @@ $('pasteBtn').addEventListener('click', async () => {
 async function refreshCfgStatus() {
   try {
     const r = await fetch('/api/config');
+    if (!r.ok) return;
     const c = await r.json();
     $('xhsSt').textContent = c.xhs_cookie_set ? '已配置' : '未配置';
     $('xhsSt').className = c.xhs_cookie_set ? '' : 'off';
@@ -343,14 +405,51 @@ async function refreshCfgStatus() {
     $('dySt').className = c.douyin_cookie_set ? '' : 'off';
     $('liveChk').checked = !!c.save_live_photo_video;
     $('stopBtn').style.display = c.can_shutdown ? '' : 'none';
-  } catch (e) {}
+    showWakeBanner(false);
+  } catch (e) {
+    showWakeBanner(true);
+  }
 }
 
 refreshCfgStatus();
 
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
+function sendHeartbeat() {
+  fetch('/api/heartbeat', { method: 'POST', keepalive: true })
+    .then(r => { if (r.ok) showWakeBanner(false); })
+    .catch(() => {});
+}
+
+setInterval(() => {
+  if (document.visibilityState === 'visible') sendHeartbeat();
+}, 20000);
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    if (navigator.sendBeacon) navigator.sendBeacon('/api/leave?mode=hidden', '');
+  } else {
+    refreshCfgStatus();
+    sendHeartbeat();
+  }
+});
+
+window.addEventListener('pagehide', () => {
+  if (navigator.sendBeacon) navigator.sendBeacon('/api/leave?mode=close', '');
+});
+
+if ($('retryConnBtn')) {
+  $('retryConnBtn').addEventListener('click', () => {
+    refreshCfgStatus();
+    sendHeartbeat();
+  });
+}
+
 $('stopBtn').addEventListener('click', async () => {
   try { await fetch('/api/shutdown', { method: 'POST' }); } catch (e) {}
-  setHint('本地服务已关闭，需要时回 Termux 敲 gw 再开。');
+  setHint('本次解析服务已关闭；下次打开或刷新网页会自动唤醒。');
   $('stopBtn').style.display = 'none';
 });
 
@@ -551,17 +650,50 @@ def _save_job_to_output(job: StoredJob, store: JobStore, client: HttpClient, con
 
 
 class WebAppState:
-    """Shared server state holding job registry, config path, and activity timestamp."""
+    """Shared server state holding job registry, config path, and activity lifecycle."""
 
     def __init__(self, config_dir: Optional[Path] = None, can_shutdown: bool = False):
         self.config_dir = config_dir
         self.can_shutdown = can_shutdown
         self.store = JobStore()
+        self._lock = threading.Lock()
+        self.active_requests = 0
+        self.leave_deadline: Optional[float] = None
         self.last_activity = time.monotonic()
         self.server: Optional[ThreadingHTTPServer] = None
 
     def touch(self) -> None:
-        self.last_activity = time.monotonic()
+        with self._lock:
+            self.last_activity = time.monotonic()
+            self.leave_deadline = None
+
+    def mark_leave(self, delay_sec: float) -> None:
+        with self._lock:
+            self.leave_deadline = time.monotonic() + max(0.1, delay_sec)
+
+    @contextmanager
+    def busy(self):
+        with self._lock:
+            self.active_requests += 1
+            self.last_activity = time.monotonic()
+            self.leave_deadline = None
+        try:
+            yield
+        finally:
+            with self._lock:
+                self.active_requests = max(0, self.active_requests - 1)
+                self.last_activity = time.monotonic()
+
+    def should_shutdown(self, idle_timeout: int) -> bool:
+        with self._lock:
+            if self.active_requests > 0:
+                return False
+            now = time.monotonic()
+            if self.leave_deadline is not None and now >= self.leave_deadline:
+                return True
+            if idle_timeout > 0 and (now - self.last_activity) > idle_timeout:
+                return True
+            return False
 
     def client(self) -> Tuple[Config, HttpClient]:
         cfg = load_config(self.config_dir)
@@ -599,9 +731,10 @@ def make_handler(state: WebAppState):
             return json.loads(raw.decode("utf-8"))
 
         def do_GET(self) -> None:
-            state.touch()
             parsed = urlparse(self.path)
             path = parsed.path
+            if path != "/sw.js":
+                state.touch()
 
             if path == "/":
                 self._send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", INDEX_HTML.encode("utf-8"))
@@ -611,6 +744,9 @@ def make_handler(state: WebAppState):
                 return
             if path == "/icon.svg":
                 self._send_bytes(HTTPStatus.OK, "image/svg+xml; charset=utf-8", APP_ICON_SVG.encode("utf-8"))
+                return
+            if path == "/sw.js":
+                self._send_bytes(HTTPStatus.OK, "application/javascript; charset=utf-8", SW_JS.encode("utf-8"))
                 return
             if path == "/api/config":
                 cfg = load_config(state.config_dir)
@@ -638,9 +774,32 @@ def make_handler(state: WebAppState):
 
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
 
+        def _drain_body(self) -> None:
+            try:
+                length = int(self.headers.get("Content-Length") or "0")
+            except ValueError:
+                length = 0
+            if 0 < length <= 65536:
+                self.rfile.read(length)
+
         def do_POST(self) -> None:
-            state.touch()
-            path = urlparse(self.path).path
+            parsed = urlparse(self.path)
+            path = parsed.path
+            if path != "/api/leave":
+                state.touch()
+
+            if path == "/api/heartbeat":
+                self._drain_body()
+                self._send_json(HTTPStatus.OK, {"ok": True})
+                return
+
+            if path == "/api/leave":
+                self._drain_body()
+                mode = parse_qs(parsed.query).get("mode", ["hidden"])[0]
+                delay = 6.0 if mode == "close" else 30.0
+                state.mark_leave(delay)
+                self._send_json(HTTPStatus.OK, {"ok": True, "mode": mode})
+                return
 
             if path == "/api/extract":
                 try:
@@ -656,7 +815,8 @@ def make_handler(state: WebAppState):
 
                 cfg, client = state.client()
                 try:
-                    result = extract(url, client, cfg)
+                    with state.busy():
+                        result = extract(url, client, cfg)
                 except (ExtractionError, HttpError) as e:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(e)})
                     return
@@ -707,7 +867,8 @@ def make_handler(state: WebAppState):
                     self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "任务不存在或已过期，请重新提取"})
                     return
                 cfg, client = state.client()
-                saved, errs = _save_job_to_output(job, state.store, client, cfg)
+                with state.busy():
+                    saved, errs = _save_job_to_output(job, state.store, client, cfg)
                 if not saved:
                     self._send_json(HTTPStatus.BAD_GATEWAY, {"ok": False, "error": "; ".join(errs) or "保存失败"})
                     return
@@ -742,53 +903,54 @@ def make_handler(state: WebAppState):
             _, client = state.client()
             expected = "video" if sa.asset.kind in ("video", "live_video") else "image"
             range_hdr = self.headers.get("Range")
-            try:
-                stream = client.open_media_candidates(
-                    state.store.candidate_urls_for(sa),
-                    default_ext=sa.asset.default_ext,
-                    expected_prefix=expected,
-                    headers=sa.asset.headers,
-                    mobile=sa.asset.mobile,
-                    range_header=range_hdr,
-                )
-            except Exception as e:
-                self._send_json(HTTPStatus.BAD_GATEWAY, {"ok": False, "error": f"拉取媒体失败: {e}"})
-                return
-
-            state.store.remember_winning(sa, stream.winning_url, stream.ext)
-            try:
-                self.send_response(stream.status)
-                self.send_header("Content-Type", stream.content_type)
-                if stream.content_length:
-                    self.send_header("Content-Length", stream.content_length)
-                else:
-                    self.send_header("Connection", "close")
-                    self.close_connection = True
-                if stream.content_range:
-                    self.send_header("Content-Range", stream.content_range)
-                if stream.accept_ranges:
-                    self.send_header("Accept-Ranges", stream.accept_ranges)
-                if as_download:
-                    ext = sa.resolved_ext or stream.ext
-                    fname = f"{sa.stem}{ext}"
-                    ascii_fb = f"media_{sa.index}{ext}"
-                    self.send_header(
-                        "Content-Disposition",
-                        f"attachment; filename=\"{ascii_fb}\"; filename*=UTF-8''{quote(fname)}",
+            with state.busy():
+                try:
+                    stream = client.open_media_candidates(
+                        state.store.candidate_urls_for(sa),
+                        default_ext=sa.asset.default_ext,
+                        expected_prefix=expected,
+                        headers=sa.asset.headers,
+                        mobile=sa.asset.mobile,
+                        range_header=range_hdr,
                     )
-                self.send_header("Cache-Control", "private, max-age=300")
-                self.end_headers()
+                except Exception as e:
+                    self._send_json(HTTPStatus.BAD_GATEWAY, {"ok": False, "error": f"拉取媒体失败: {e}"})
+                    return
 
-                self.wfile.write(stream.first_chunk)
-                while True:
-                    chunk = stream.resp.read(65536)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-                pass
-            finally:
-                stream.close()
+                state.store.remember_winning(sa, stream.winning_url, stream.ext)
+                try:
+                    self.send_response(stream.status)
+                    self.send_header("Content-Type", stream.content_type)
+                    if stream.content_length:
+                        self.send_header("Content-Length", stream.content_length)
+                    else:
+                        self.send_header("Connection", "close")
+                        self.close_connection = True
+                    if stream.content_range:
+                        self.send_header("Content-Range", stream.content_range)
+                    if stream.accept_ranges:
+                        self.send_header("Accept-Ranges", stream.accept_ranges)
+                    if as_download:
+                        ext = sa.resolved_ext or stream.ext
+                        fname = f"{sa.stem}{ext}"
+                        ascii_fb = f"media_{sa.index}{ext}"
+                        self.send_header(
+                            "Content-Disposition",
+                            f"attachment; filename=\"{ascii_fb}\"; filename*=UTF-8''{quote(fname)}",
+                        )
+                    self.send_header("Cache-Control", "private, max-age=300")
+                    self.end_headers()
+
+                    self.wfile.write(stream.first_chunk)
+                    while True:
+                        chunk = stream.resp.read(65536)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    pass
+                finally:
+                    stream.close()
 
         def _handle_zip(self, job_id: str) -> None:
             job = state.store.get_job(job_id)
@@ -797,7 +959,8 @@ def make_handler(state: WebAppState):
                 return
             cfg, client = state.client()
             try:
-                zip_name, zip_bytes = _build_zip_bytes(job, state.store, client, cfg)
+                with state.busy():
+                    zip_name, zip_bytes = _build_zip_bytes(job, state.store, client, cfg)
             except Exception as e:
                 self._send_json(HTTPStatus.BAD_GATEWAY, {"ok": False, "error": f"打包失败: {e}"})
                 return
@@ -851,9 +1014,9 @@ def serve(host: str = "0.0.0.0", port: int = 8765, idle_timeout: int = 0, allow_
     if idle_timeout > 0:
         def _watchdog() -> None:
             while True:
-                time.sleep(5)
-                if time.monotonic() - state.last_activity > idle_timeout:
-                    print("[media-grab] 闲置超时，自动退出。")
+                time.sleep(1)
+                if state.should_shutdown(idle_timeout):
+                    print("[media-grab] 页面已关闭或闲置超时，自动退出。")
                     srv.shutdown()
                     break
 

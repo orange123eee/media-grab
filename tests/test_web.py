@@ -2,8 +2,10 @@
 
 import io
 import json
+import socket
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -12,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from media_grab.extractors import ExtractResult, MediaAsset
+from media_grab.gate import OnDemandGate
 from media_grab.web import ReusableThreadingHTTPServer, WebAppState, make_handler
 
 
@@ -183,6 +186,73 @@ class WebServerTests(unittest.TestCase):
         dst, _, draw = self._req("/api/shutdown", method="POST")
         self.assertEqual(dst, 200)
         self.assertTrue(json.loads(draw.decode("utf-8"))["ok"])
+
+    def test_sw_and_lifecycle_heartbeat_leave(self):
+        st, hdrs, body = self._req("/sw.js")
+        self.assertEqual(st, 200)
+        self.assertIn("javascript", hdrs.get("Content-Type", ""))
+        self.assertIn("media-grab-shell", body.decode("utf-8"))
+
+        lst, _, lraw = self._req("/api/leave?mode=close", method="POST")
+        self.assertEqual(lst, 200)
+        self.assertEqual(json.loads(lraw.decode("utf-8"))["mode"], "close")
+        self.assertIsNotNone(self.state.leave_deadline)
+        self.assertFalse(self.state.should_shutdown(90))
+
+        # Busy download/stream protects worker even if leave deadline already passed.
+        with self.state.busy():
+            self.state.leave_deadline = time.monotonic() - 1.0
+            self.assertFalse(self.state.should_shutdown(90))
+        # Once busy transfer completes, overdue leave signal allows shutdown.
+        self.assertTrue(self.state.should_shutdown(90))
+
+        # Heartbeat clears pending leave deadline and resets activity.
+        hst, _, hraw = self._req("/api/heartbeat", method="POST")
+        self.assertEqual(hst, 200)
+        self.assertTrue(json.loads(hraw.decode("utf-8"))["ok"])
+        self.assertIsNone(self.state.leave_deadline)
+        self.assertFalse(self.state.should_shutdown(90))
+
+
+class OnDemandGateTests(unittest.TestCase):
+    def test_gate_spawns_on_demand_and_proxies(self):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.bind(("127.0.0.1", 0))
+        worker_port = probe.getsockname()[1]
+        probe.close()
+
+        worker_state = WebAppState()
+        created = []
+        worker_holder = []
+
+        def spawn_worker():
+            created.append(1)
+            srv = ReusableThreadingHTTPServer(("127.0.0.1", worker_port), make_handler(worker_state))
+            worker_holder.append(srv)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+        gate = OnDemandGate(host="127.0.0.1", port=0, worker_port=worker_port, spawn_fn=spawn_worker)
+        gthread = threading.Thread(target=gate.serve_forever, daemon=True)
+        gthread.start()
+
+        try:
+            self.assertEqual(len(created), 0)
+            with urllib.request.urlopen(f"http://127.0.0.1:{gate.port}/manifest.json", timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertEqual(json.loads(resp.read().decode("utf-8"))["name"], "无水印提取")
+            self.assertEqual(len(created), 1)
+
+            # Second request reuses already running worker instead of spawning again.
+            with urllib.request.urlopen(f"http://127.0.0.1:{gate.port}/api/config", timeout=5) as resp2:
+                self.assertEqual(resp2.status, 200)
+                self.assertIn("xhs_cookie_set", json.loads(resp2.read().decode("utf-8")))
+            self.assertEqual(len(created), 1)
+        finally:
+            gate.close()
+            for srv in worker_holder:
+                srv.shutdown()
+                srv.server_close()
+            gthread.join(timeout=2)
 
 
 if __name__ == "__main__":
