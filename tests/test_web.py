@@ -204,7 +204,9 @@ class WebServerTests(unittest.TestCase):
         st, hdrs, body = self._req("/sw.js")
         self.assertEqual(st, 200)
         self.assertIn("javascript", hdrs.get("Content-Type", ""))
-        self.assertIn("media-grab-shell", body.decode("utf-8"))
+        sw_text = body.decode("utf-8")
+        self.assertIn("media-grab-shell", sw_text)
+        self.assertIn("fetchWithTimeout", sw_text)
 
         lst, _, lraw = self._req("/api/leave?mode=close", method="POST")
         self.assertEqual(lst, 200)
@@ -225,6 +227,33 @@ class WebServerTests(unittest.TestCase):
         self.assertTrue(json.loads(hraw.decode("utf-8"))["ok"])
         self.assertIsNone(self.state.leave_deadline)
         self.assertFalse(self.state.should_shutdown(90))
+
+    def test_hibernate_on_shutdown_keeps_server_alive(self):
+        self.state.can_shutdown = True
+        self.state.hibernate_only = True
+        job = self.state.store.put_result(
+            ExtractResult(
+                platform="douyin",
+                item_id="hib1",
+                title="休眠清理",
+                author="u",
+                assets=[MediaAsset(kind="image", urls=["https://good.example/1.jpg"], default_ext=".jpg")],
+            )
+        )
+        self.assertIsNotNone(self.state.store.get_job(job.job_id))
+
+        sst, _, sraw = self._req("/api/shutdown", method="POST")
+        self.assertEqual(sst, 200)
+        sdata = json.loads(sraw.decode("utf-8"))
+        self.assertTrue(sdata["ok"])
+        self.assertTrue(sdata["hibernated"])
+        self.assertTrue(self.state.is_hibernated())
+        self.assertIsNone(self.state.store.get_job(job.job_id))
+
+        # Server keeps listening so next page open wakes immediately with 200 OK.
+        st_idx, _, _ = self._req("/")
+        self.assertEqual(st_idx, 200)
+        self.assertFalse(self.state.is_hibernated())
 
 
 class OnDemandGateTests(unittest.TestCase):

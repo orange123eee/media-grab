@@ -171,7 +171,16 @@ class OnDemandGate:
             t1.join()
             t2.join()
         except Exception:
-            pass
+            try:
+                client_sock.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Content-Type: text/plain; charset=utf-8\r\n"
+                    b"Connection: close\r\n"
+                    b"Content-Length: 21\r\n\r\n"
+                    b"Local worker starting"
+                )
+            except OSError:
+                pass
         finally:
             for s in (client_sock, upstream):
                 if s is not None:
@@ -197,26 +206,22 @@ class OnDemandGate:
 
 
 def main(argv: Optional[list] = None) -> int:
-    parser = argparse.ArgumentParser(description="On-demand socket activator for media_grab.web")
-    parser.add_argument("--host", default="127.0.0.1", help="Gate listen host (default 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8765, help="Gate listen port (default 8765)")
-    parser.add_argument("--worker-port", type=int, default=8766, help="Lazy web worker port (default 8766)")
-    parser.add_argument("--idle-timeout", type=int, default=180, help="Worker idle timeout in seconds (default 180)")
+    parser = argparse.ArgumentParser(description="Single-process local server for media_grab.web")
+    parser.add_argument("--host", default="127.0.0.1", help="Listen host (default 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8765, help="Listen port (default 8765)")
+    parser.add_argument("--worker-port", type=int, default=8766, help="Unused legacy flag kept for compatibility")
+    parser.add_argument("--idle-timeout", type=int, default=180, help="Idle timeout in seconds (default 180)")
     args = parser.parse_args(argv)
 
-    gate = OnDemandGate(
+    from .web import serve
+
+    serve(
         host=args.host,
         port=args.port,
-        worker_port=args.worker_port,
         idle_timeout=args.idle_timeout,
+        allow_shutdown=True,
+        hibernate_on_idle=True,
     )
-    print(f"[media-grab] 按需网关已就绪: http://{args.host}:{gate.port} -> worker:{args.worker_port}")
-    try:
-        gate.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        gate.close()
     return 0
 
 

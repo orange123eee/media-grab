@@ -74,3 +74,21 @@ def toast(message: str) -> None:
             subprocess.run(["termux-toast", message], capture_output=True, timeout=5)
         except Exception:
             pass
+
+
+def wake_lock() -> None:
+    """Acquire Termux partial wake lock so Android does not freeze local background sockets."""
+    if has_cmd("termux-wake-lock"):
+        try:
+            subprocess.run(["termux-wake-lock"], capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+
+def wake_unlock() -> None:
+    """Release Termux partial wake lock when exiting or explicitly requested."""
+    if has_cmd("termux-wake-unlock"):
+        try:
+            subprocess.run(["termux-wake-unlock"], capture_output=True, timeout=5)
+        except Exception:
+            pass

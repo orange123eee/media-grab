@@ -1,6 +1,7 @@
 """Mobile-first web UI & tokenized media proxy server (pure Python stdlib)."""
 
 import argparse
+import gc
 import io
 import json
 import os
@@ -46,8 +47,14 @@ MANIFEST_JSON = json.dumps(
     ensure_ascii=False,
 )
 
-SW_JS = """const CACHE_NAME = 'media-grab-shell-v2';
+SW_JS = """const CACHE_NAME = 'media-grab-shell-v3';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg'];
+
+function fetchWithTimeout(req, ms) {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), ms);
+  return fetch(req, { signal: ctrl.signal, cache: 'no-store' }).finally(() => clearTimeout(tid));
+}
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -57,7 +64,12 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
+      .catch(() => {})
+  );
 });
 
 self.addEventListener('fetch', (event) => {
@@ -69,7 +81,7 @@ self.addEventListener('fetch', (event) => {
 
   if (req.mode === 'navigate' || url.pathname === '/') {
     event.respondWith(
-      fetch(req)
+      fetchWithTimeout(req, 450)
         .then((res) => {
           if (res && res.ok) {
             const copy = res.clone();
@@ -77,14 +89,25 @@ self.addEventListener('fetch', (event) => {
           }
           return res;
         })
-        .catch(() => caches.match('/'))
+        .catch(() => caches.match('/').then((cached) => cached || new Response(
+          '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="background:#0b0e14;color:#eef2f8;font-family:sans-serif;padding:24px"><h3>本地 Termux 服务被系统暂停</h3><p>点下方按钮唤起 Termux 后刷新本页即可：</p><p><a href="intent://#Intent;package=com.termux;end" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;border-radius:10px;text-decoration:none">⚡ 一键唤醒 Termux 服务</a></p></body>',
+          { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+        )))
     );
     return;
   }
 
   if (url.pathname === '/manifest.json' || url.pathname === '/icon.svg') {
     event.respondWith(
-      fetch(req).catch(() => caches.match(url.pathname))
+      fetchWithTimeout(req, 450)
+        .then((res) => {
+          if (res && res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE_NAME).then((c) => c.put(url.pathname, copy)).catch(() => {});
+          }
+          return res;
+        })
+        .catch(() => caches.match(url.pathname))
     );
   }
 });
@@ -376,6 +399,7 @@ INDEX_HTML = r"""<!doctype html>
 const $ = id => document.getElementById(id);
 const HIST_KEY = 'mg_history_v1';
 let busy = false;
+let serverOnline = false;
 let currentJob = null;
 let lbImages = [];
 let lbIdx = 0;
@@ -395,6 +419,7 @@ function showToast(msg) {
 }
 
 function setOnline(ok, txt) {
+  serverOnline = !!ok;
   $('statusDot').className = 'dot ' + (ok ? 'on' : 'off');
   $('statusTxt').textContent = txt || (ok ? '按需服务就绪 · 关页自动停止' : '未连接本地服务');
 }
@@ -552,6 +577,20 @@ async function runExtract(text) {
   }, 100);
 
   try {
+    if (!serverOnline) {
+      try {
+        await fetchJsonWithRetry('/api/heartbeat', { method: 'POST' }, 1500, 0);
+        showWakeBanner(false);
+        setOnline(true, '按需服务就绪 · 关页自动停止');
+      } catch (hbErr) {
+        showWakeBanner(true);
+        setOnline(false, '服务未连接');
+        showErr('本地 Termux 服务未响应（可能被安卓后台冻结），请点上方「⚡ 一键唤醒 Termux 服务」后重试');
+        setHint('');
+        return;
+      }
+    }
+
     const { res: r, data: d } = await fetchJsonWithRetry('/api/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -574,7 +613,13 @@ async function runExtract(text) {
     showToast('解析成功 (' + sec + 's)');
   } catch (e) {
     const msg = e && e.message ? e.message : '连接失败';
-    if (!/超时/.test(msg)) {
+    let alive = true;
+    try {
+      await fetchJsonWithRetry('/api/heartbeat', { method: 'POST' }, 1000, 0);
+    } catch (_) {
+      alive = false;
+    }
+    if (!alive || !/超时/.test(msg)) {
       showWakeBanner(true);
       setOnline(false, '服务未连接');
     }
@@ -739,9 +784,9 @@ $('pasteBtn').addEventListener('click', async () => {
   setHint('当前浏览器限制网页自动读剪贴板：请长按输入框点「粘贴」，粘贴后会自动开始提取。');
 });
 
-async function refreshCfgStatus() {
+async function refreshCfgStatus(fast = false) {
   try {
-    const { res: r, data: c } = await fetchJsonWithRetry('/api/config', {}, 8000, 1);
+    const { res: r, data: c } = await fetchJsonWithRetry('/api/config', {}, fast ? 1200 : 3500, 0);
     if (!r.ok) return;
     $('xhsSt').textContent = c.xhs_cookie_set ? '已配置' : '未配置';
     $('xhsSt').className = c.xhs_cookie_set ? '' : 'off';
@@ -753,11 +798,11 @@ async function refreshCfgStatus() {
     setOnline(true, '按需服务就绪 · 关页自动停止');
   } catch (e) {
     showWakeBanner(true);
-    setOnline(false, '网关未连接');
+    setOnline(false, '网关未连接 · 请点击唤醒');
   }
 }
 
-refreshCfgStatus();
+refreshCfgStatus(true);
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -777,7 +822,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     if (navigator.sendBeacon) navigator.sendBeacon('/api/leave?mode=hidden', '');
   } else {
-    refreshCfgStatus();
+    refreshCfgStatus(true);
     sendHeartbeat();
   }
 });
@@ -835,6 +880,11 @@ $('clrCkBtn').addEventListener('click', async () => {
 </body>
 </html>
 """
+
+APP_ICON_SVG_BYTES = APP_ICON_SVG.encode("utf-8")
+MANIFEST_JSON_BYTES = MANIFEST_JSON.encode("utf-8")
+SW_JS_BYTES = SW_JS.encode("utf-8")
+INDEX_HTML_BYTES = INDEX_HTML.encode("utf-8")
 
 
 @dataclass
@@ -926,6 +976,11 @@ class JobStore:
             sa.resolved_url = url
             sa.resolved_ext = ext
 
+    def clear(self) -> None:
+        with self._lock:
+            self._jobs.clear()
+            self._assets.clear()
+
 
 def _build_zip_bytes(job: StoredJob, store: JobStore, client: HttpClient, config: Config) -> Tuple[str, bytes]:
     buf = io.BytesIO()
@@ -1007,11 +1062,14 @@ def _save_job_to_output(job: StoredJob, store: JobStore, client: HttpClient, con
 class WebAppState:
     """Shared server state holding job registry, config path, and activity lifecycle."""
 
-    def __init__(self, config_dir: Optional[Path] = None, can_shutdown: bool = False):
+    def __init__(self, config_dir: Optional[Path] = None, can_shutdown: bool = False, hibernate_only: bool = False):
         self.config_dir = config_dir
         self.can_shutdown = can_shutdown
+        self.hibernate_only = hibernate_only
+        self.hibernated = False
         self.store = JobStore()
         self._lock = threading.Lock()
+        self._wake_event = threading.Event()
         self.active_requests = 0
         self.leave_deadline: Optional[float] = None
         self.last_activity = time.monotonic()
@@ -1021,10 +1079,23 @@ class WebAppState:
         with self._lock:
             self.last_activity = time.monotonic()
             self.leave_deadline = None
+            self.hibernated = False
+            self._wake_event.set()
 
     def mark_leave(self, delay_sec: float) -> None:
         with self._lock:
             self.leave_deadline = time.monotonic() + max(0.1, delay_sec)
+            self._wake_event.set()
+
+    def hibernate(self) -> None:
+        with self._lock:
+            if self.active_requests > 0:
+                return
+            self.store.clear()
+            self.leave_deadline = None
+            self.hibernated = True
+            self._wake_event.clear()
+        gc.collect()
 
     @contextmanager
     def busy(self):
@@ -1032,12 +1103,18 @@ class WebAppState:
             self.active_requests += 1
             self.last_activity = time.monotonic()
             self.leave_deadline = None
+            self.hibernated = False
+            self._wake_event.set()
         try:
             yield
         finally:
             with self._lock:
                 self.active_requests = max(0, self.active_requests - 1)
                 self.last_activity = time.monotonic()
+
+    def is_hibernated(self) -> bool:
+        with self._lock:
+            return self.hibernated
 
     def should_shutdown(self, idle_timeout: int) -> bool:
         with self._lock:
@@ -1060,6 +1137,7 @@ def make_handler(state: WebAppState):
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        timeout = 15
 
         def log_message(self, format: str, *args: Any) -> None:
             return
@@ -1091,17 +1169,17 @@ def make_handler(state: WebAppState):
             if path != "/sw.js":
                 state.touch()
 
-            if path == "/":
-                self._send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", INDEX_HTML.encode("utf-8"))
+            if path in ("/", "/index.html"):
+                self._send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", INDEX_HTML_BYTES)
                 return
             if path == "/manifest.json":
-                self._send_bytes(HTTPStatus.OK, "application/manifest+json; charset=utf-8", MANIFEST_JSON.encode("utf-8"))
+                self._send_bytes(HTTPStatus.OK, "application/manifest+json; charset=utf-8", MANIFEST_JSON_BYTES)
                 return
             if path == "/icon.svg":
-                self._send_bytes(HTTPStatus.OK, "image/svg+xml; charset=utf-8", APP_ICON_SVG.encode("utf-8"))
+                self._send_bytes(HTTPStatus.OK, "image/svg+xml; charset=utf-8", APP_ICON_SVG_BYTES)
                 return
             if path == "/sw.js":
-                self._send_bytes(HTTPStatus.OK, "application/javascript; charset=utf-8", SW_JS.encode("utf-8"))
+                self._send_bytes(HTTPStatus.OK, "application/javascript; charset=utf-8", SW_JS_BYTES)
                 return
             if path == "/api/config":
                 cfg = load_config(state.config_dir)
@@ -1246,8 +1324,12 @@ def make_handler(state: WebAppState):
                 return
 
             if path == "/api/shutdown":
-                if not state.can_shutdown or state.server is None:
+                if not state.can_shutdown or (not state.hibernate_only and state.server is None):
                     self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "当前模式不允许远程关闭"})
+                    return
+                if state.hibernate_only:
+                    state.hibernate()
+                    self._send_json(HTTPStatus.OK, {"ok": True, "hibernated": True})
                     return
                 self._send_json(HTTPStatus.OK, {"ok": True})
                 threading.Thread(target=state.server.shutdown, daemon=True).start()
@@ -1371,21 +1453,33 @@ class ReusableThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
-def serve(host: str = "0.0.0.0", port: int = 8765, idle_timeout: int = 0, allow_shutdown: bool = False) -> None:
+def serve(
+    host: str = "0.0.0.0",
+    port: int = 8765,
+    idle_timeout: int = 0,
+    allow_shutdown: bool = False,
+    hibernate_on_idle: bool = False,
+) -> None:
     """Start the local web UI server."""
     can_stop = allow_shutdown or idle_timeout > 0 or host == "127.0.0.1"
-    state = WebAppState(can_shutdown=can_stop)
+    state = WebAppState(can_shutdown=can_stop, hibernate_only=hibernate_on_idle)
     srv = ReusableThreadingHTTPServer((host, port), make_handler(state))
     state.server = srv
+    android.wake_lock()
 
     if idle_timeout > 0:
         def _watchdog() -> None:
             while True:
+                if hibernate_on_idle and state.is_hibernated():
+                    state._wake_event.wait()
                 time.sleep(1)
                 if state.should_shutdown(idle_timeout):
-                    print("[media-grab] 页面已关闭或闲置超时，自动退出。")
-                    srv.shutdown()
-                    break
+                    if hibernate_on_idle:
+                        state.hibernate()
+                    else:
+                        print("[media-grab] 页面已关闭或闲置超时，自动退出。")
+                        srv.shutdown()
+                        break
 
         threading.Thread(target=_watchdog, daemon=True).start()
 
@@ -1408,6 +1502,7 @@ def serve(host: str = "0.0.0.0", port: int = 8765, idle_timeout: int = 0, allow_
         print("\n[media-grab] 已停止服务。")
     finally:
         srv.server_close()
+        android.wake_unlock()
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -1416,8 +1511,19 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8765, help="端口（默认 8765）")
     parser.add_argument("--idle-timeout", type=int, default=0, help="闲置多少秒后自动退出（0 为不自动退出）")
     parser.add_argument("--allow-shutdown", action="store_true", help="允许网页右上角「关闭后台」按钮关闭服务")
+    parser.add_argument(
+        "--hibernate-on-idle",
+        action="store_true",
+        help="闲置或关闭请求时清理内存进入休眠而不退出进程（重开网页秒级响应）",
+    )
     args = parser.parse_args(argv)
-    serve(host=args.host, port=args.port, idle_timeout=args.idle_timeout, allow_shutdown=args.allow_shutdown)
+    serve(
+        host=args.host,
+        port=args.port,
+        idle_timeout=args.idle_timeout,
+        allow_shutdown=args.allow_shutdown,
+        hibernate_on_idle=args.hibernate_on_idle,
+    )
     return 0
 
 
