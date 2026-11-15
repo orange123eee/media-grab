@@ -5,6 +5,7 @@ import json
 import tempfile
 import time
 import unittest
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import quote
@@ -460,6 +461,141 @@ class XiaohongshuExtractorTests(unittest.TestCase):
         i_res = parse_xhs_state(img_state, "xhsspec", Config())
         self.assertEqual(i_res.assets[0].urls[0], "https://sns-webpic-qc.xhscdn.com/spectrum/hi!nd_dft_wgth_jpg_3")
 
+    def test_xhs_login_redirect_and_empty_desktop_state_falls_back_to_mobile_ranchi(self):
+        calls = []
+
+        class FallbackClient:
+            def cookie_for_url(self, url):
+                return ""
+
+            def get(self, url, headers=None, mobile=False, follow_redirects=True):
+                calls.append((url, bool(mobile), dict(headers or {})))
+                if not mobile:
+                    empty_state = json.dumps({"note": {"noteDetailMap": {}}, "login": {"showLogin": True}})
+                    return HttpResponse(
+                        200,
+                        "https://www.xiaohongshu.com/login?redirectPath=https%3A%2F%2Fwww.xiaohongshu.com%2Fdiscovery%2Fitem%2F6af8f5f2000000001802b847%3Fxsec_source%3Dapp_share%26xsec_token%3DTOK123",
+                        {},
+                        f"<script>window.__INITIAL_STATE__={empty_state}</script>".encode("utf-8"),
+                    )
+                mob_state = json.dumps(
+                    {
+                        "noteData": {
+                            "data": {
+                                "noteData": {
+                                    "noteId": "6af8f5f2000000001802b847",
+                                    "type": "normal",
+                                    "title": "移动端救援",
+                                    "user": {"nickName": "^過氧化氫^"},
+                                    "imageList": [
+                                        {
+                                            "fileId": "notes_pre_post/abc123",
+                                            "url": "http://sns-webpic-qc.xhscdn.com/20261115/hash/notes_pre_post/abc123!h5_1080jpg",
+                                        }
+                                    ],
+                                }
+                            }
+                        }
+                    }
+                )
+                return HttpResponse(
+                    200,
+                    url,
+                    {},
+                    f"<script>window.__INITIAL_STATE__={mob_state}</script>".encode("utf-8"),
+                )
+
+        res = extract_xiaohongshu("https://xhslink.cn/o/49Ca3i7osT8", FallbackClient(), Config())
+        self.assertEqual(res.author, "^過氧化氫^")
+        self.assertEqual(res.title, "移动端救援")
+        self.assertEqual(
+            res.assets[0].urls[0],
+            "https://sns-img-hw.xhscdn.com/notes_pre_post/abc123?imageView2/2/w/format/png",
+        )
+        # Ensure recovered mobile request kept full xsec_token query param
+        self.assertTrue(any(mob and "xsec_token=TOK123" in u for u, mob, _ in calls))
+
+    def test_xhs_setup_server_state_and_ld_json_meta_fallbacks(self):
+        class SetupStateClient:
+            def get(self, url, **kwargs):
+                init_state = json.dumps({"noteData": {"data": {}}})
+                setup_state = json.dumps(
+                    {
+                        "LAUNCHER_SSR_STORE_PAGE_DATA": {
+                            "noteData": {
+                                "noteId": "setup999",
+                                "type": "normal",
+                                "title": "SetupSSR",
+                                "user": {"nickName": "作者B"},
+                                "imageList": [{"traceId": "notes_pre_post/tok_setup"}],
+                            }
+                        }
+                    }
+                )
+                html = f"<script>window.__INITIAL_STATE__={init_state}</script><script>window.__SETUP_SERVER_STATE__={setup_state}</script>"
+                return HttpResponse(200, "https://www.xiaohongshu.com/discovery/item/setup999?xsec_token=ok", {}, html.encode("utf-8"))
+
+        setup_res = extract_xiaohongshu("https://xhslink.cn/o/setup999", SetupStateClient(), Config())
+        self.assertEqual(setup_res.author, "作者B")
+        self.assertEqual(setup_res.assets[0].urls[0], "https://sns-img-hw.xhscdn.com/notes_pre_post/tok_setup?imageView2/2/w/format/png")
+
+        class MetaOnlyClient:
+            def get(self, url, **kwargs):
+                empty_state = json.dumps({"note": {"noteDetailMap": {}}})
+                ld = json.dumps(
+                    {
+                        "@context": "https://schema.org",
+                        "@type": "Article",
+                        "headline": "兜底标题 - 小红书",
+                        "image": [
+                            "https://ci.xiaohongshu.com/http://sns-webpic-qc.xhscdn.com/202611152129/5d4043124ad5d99d89526097d4770794/notes_pre_post/ldimg1!h5_1080jpg"
+                        ],
+                    }
+                )
+                html = (
+                    f"<script>window.__INITIAL_STATE__={empty_state}</script>"
+                    '<meta property="og:image" content="//picasso-static.xiaohongshu.com/fe-platform/logo.png">'
+                    f'<script type="application/ld+json">{ld}</script>'
+                )
+                return HttpResponse(200, "https://www.xiaohongshu.com/discovery/item/meta111?xsec_token=ok", {}, html.encode("utf-8"))
+
+        meta_res = extract_xiaohongshu("https://xhslink.cn/o/meta111", MetaOnlyClient(), Config())
+        self.assertEqual(meta_res.title, "兜底标题")
+        self.assertEqual(len(meta_res.assets), 1)
+        self.assertEqual(
+            meta_res.assets[0].urls[0],
+            "https://sns-img-hw.xhscdn.com/notes_pre_post/ldimg1?imageView2/2/w/format/png",
+        )
+
+    def test_xhs_stale_cookie_retries_anonymously(self):
+        class StaleCookieClient:
+            def cookie_for_url(self, url):
+                return "web_session=expired"
+
+            def get(self, url, headers=None, mobile=False, follow_redirects=True):
+                hdrs = dict(headers or {})
+                if hdrs.get("Cookie", "__USE_DEFAULT__") != "":
+                    raise HttpError("HTTP 500: https://xhslink.cn/o/abc")
+                state = json.dumps(
+                    {
+                        "noteData": {
+                            "data": {
+                                "noteData": {
+                                    "noteId": "anon1",
+                                    "type": "normal",
+                                    "title": "匿名恢复",
+                                    "imageList": [{"traceId": "notes_pre_post/anon_img"}],
+                                }
+                            }
+                        }
+                    }
+                )
+                return HttpResponse(200, url, {}, f"<script>window.__INITIAL_STATE__={state}</script>".encode("utf-8"))
+
+        res = extract_xiaohongshu("https://xhslink.cn/o/abc", StaleCookieClient(), Config(xhs_cookie="web_session=expired"))
+        self.assertEqual(res.title, "匿名恢复")
+        self.assertEqual(res.assets[0].urls[0], "https://sns-img-hw.xhscdn.com/notes_pre_post/anon_img?imageView2/2/w/format/png")
+
 
 class XExtractorTests(unittest.TestCase):
     def test_parse_fxtwitter_photos_and_highest_bitrate_video(self):
@@ -890,6 +1026,46 @@ class ConfigAndDownloadTests(unittest.TestCase):
             code = cli_main(["--clipboard"])
         self.assertEqual(code, 0)
         mock_run.assert_called_once_with("http://xhslink.com/a/xyz")
+
+    def test_http_client_drops_empty_cookie_override_and_supports_proxy_bypass(self):
+        client = HttpClient(Config(xhs_cookie="web_session=secret"))
+        hdrs_default = client._build_headers("https://www.xiaohongshu.com/discovery/item/1", None, mobile=False)
+        self.assertEqual(hdrs_default.get("Cookie"), "web_session=secret")
+        hdrs_anon = client._build_headers("https://www.xiaohongshu.com/discovery/item/1", {"Cookie": ""}, mobile=True)
+        self.assertNotIn("Cookie", hdrs_anon)
+
+        captured_handlers = []
+
+        class FakeResp:
+            status = 200
+            headers = {}
+
+            def geturl(self):
+                return "https://www.xiaohongshu.com/"
+
+            def read(self):
+                return b"ok"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_build_opener(*handlers):
+            captured_handlers.append(handlers)
+
+            class Opener:
+                def open(self, req, timeout=10):
+                    return FakeResp()
+
+            return Opener()
+
+        with patch("media_grab.http_client.urllib.request.build_opener", side_effect=fake_build_opener):
+            client.get("https://www.xiaohongshu.com/", use_proxy=False)
+
+        self.assertTrue(captured_handlers)
+        self.assertTrue(any(isinstance(h, urllib.request.ProxyHandler) and not h.proxies for h in captured_handlers[0]))
 
 
 if __name__ == "__main__":

@@ -118,6 +118,8 @@ class HttpClient:
             merged["Cookie"] = cookie
         if headers:
             merged.update(headers)
+        if not merged.get("Cookie"):
+            merged.pop("Cookie", None)
         return merged
 
     def get(
@@ -127,9 +129,12 @@ class HttpClient:
         mobile: bool = False,
         follow_redirects: bool = True,
         timeout: Optional[int] = None,
+        use_proxy: bool = True,
     ) -> HttpResponse:
         req = urllib.request.Request(url, headers=self._build_headers(url, headers, mobile), method="GET")
         handlers = [urllib.request.HTTPSHandler(context=self._ssl_ctx)]
+        if not use_proxy:
+            handlers.insert(0, urllib.request.ProxyHandler({}))
         if not follow_redirects:
             handlers.append(_NoRedirect())
         opener = urllib.request.build_opener(*handlers)

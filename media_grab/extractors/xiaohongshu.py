@@ -1,11 +1,14 @@
 """Xiaohongshu extractor: watermark-free high-res images, live photos, and highest-bitrate videos."""
 
+import html as html_lib
+import json
 import re
-from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+import urllib.request
+from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import unquote, urlparse
 
 from ..config import Config
-from ..http_client import HttpClient
+from ..http_client import HttpClient, HttpError
 from ..utils import dedupe_keep_order, extract_balanced_json, loads_relaxed_json, normalize_http_url
 from . import ExtractResult, ExtractionError, MediaAsset
 
@@ -24,24 +27,62 @@ def _parse_xhs_state(html: str) -> Optional[Dict[str, Any]]:
     return loads_relaxed_json(raw)
 
 
+def _parse_xhs_setup_state(html: str) -> Optional[Dict[str, Any]]:
+    raw = extract_balanced_json(html, r"(?:window\.)?__SETUP_SERVER_STATE__\s*=")
+    if not raw:
+        return None
+    return loads_relaxed_json(raw)
+
+
+def _looks_like_note_dict(obj: Any) -> bool:
+    return isinstance(obj, dict) and bool(obj) and any(obj.get(k) for k in ("imageList", "video", "noteId"))
+
+
 def _find_note_obj(state: Dict[str, Any], preferred_id: str) -> Optional[Dict[str, Any]]:
+    if not isinstance(state, dict):
+        return None
+
     note_section = state.get("note")
     if isinstance(note_section, dict):
         nd_map = note_section.get("noteDetailMap")
         if isinstance(nd_map, dict):
             if preferred_id and isinstance(nd_map.get(preferred_id), dict):
-                n = nd_map[preferred_id].get("note")
+                entry = nd_map[preferred_id]
+                n = entry.get("note")
                 if isinstance(n, dict) and n:
                     return n
+                if _looks_like_note_dict(entry):
+                    return entry
             for val in nd_map.values():
-                if isinstance(val, dict) and isinstance(val.get("note"), dict) and val["note"]:
-                    return val["note"]
+                if isinstance(val, dict):
+                    n = val.get("note")
+                    if isinstance(n, dict) and n:
+                        return n
+                    if _looks_like_note_dict(val):
+                        return val
+        for key in ("noteDetail", "currentNote"):
+            candidate = note_section.get(key)
+            if isinstance(candidate, dict) and candidate:
+                return candidate
 
     note_data = state.get("noteData")
     if isinstance(note_data, dict):
         data = note_data.get("data")
-        if isinstance(data, dict) and isinstance(data.get("noteData"), dict):
-            return data["noteData"]
+        if isinstance(data, dict):
+            nested = data.get("noteData")
+            if isinstance(nested, dict) and nested:
+                return nested
+            if _looks_like_note_dict(data):
+                return data
+        direct = note_data.get("noteData")
+        if isinstance(direct, dict) and direct:
+            return direct
+
+    ssr_page = state.get("LAUNCHER_SSR_STORE_PAGE_DATA")
+    if isinstance(ssr_page, dict):
+        ssr_note = ssr_page.get("noteData")
+        if isinstance(ssr_note, dict) and ssr_note:
+            return ssr_note
     return None
 
 
@@ -218,15 +259,124 @@ def _build_thumb_candidates(img: Dict[str, Any]) -> List[str]:
     return dedupe_keep_order(thumbs)
 
 
-def parse_xhs_state(state: Dict[str, Any], preferred_id: str, config: Config) -> ExtractResult:
-    """Parse decoded __INITIAL_STATE__ into ExtractResult."""
-    note = _find_note_obj(state, preferred_id)
-    if not note:
-        raise ExtractionError("未在小红书页面中找到笔记内容，可能是链接已失效、需要登录态或触发了滑块验证。")
+_LD_JSON_RE = re.compile(
+    r"<script[^>]*type\s*=\s*[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
+    re.IGNORECASE | re.DOTALL,
+)
+_META_TAG_RE = re.compile(r"<meta\b[^>]+>", re.IGNORECASE)
+_META_ATTR_RE = re.compile(r"([a-zA-Z_:.-]+)\s*=\s*([\"'])(.*?)\2", re.DOTALL)
+_NOTE_PATH_RE = re.compile(r"/(?:explore|discovery/item)/([0-9a-fA-F]+)")
 
+
+def _clean_xhs_media_url(raw_url: str) -> str:
+    u = html_lib.unescape(str(raw_url or "")).strip()
+    if u.startswith("//"):
+        u = "https:" + u
+    m = re.match(r"^https?://(?:ci\.xiaohongshu\.com|[^/]+\.xhscdn\.com)/(https?://.+)$", u)
+    if m:
+        u = m.group(1)
+    return normalize_http_url(u)
+
+
+def _is_note_cdn_url(u: str) -> bool:
+    if not u:
+        return False
+    parsed = urlparse(u)
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").lower()
+    if not (host.endswith("xhscdn.com") or host == "ci.xiaohongshu.com"):
+        return False
+    if "picasso-static" in host:
+        return False
+    return not any(skip in path for skip in ("/fe-platform/", "/fe-static/", "/avatar/"))
+
+
+def _extract_meta_tags(html: str) -> List[Tuple[str, str]]:
+    tags: List[Tuple[str, str]] = []
+    for m in _META_TAG_RE.finditer(html):
+        attrs = {k.lower(): html_lib.unescape(v) for k, _, v in _META_ATTR_RE.findall(m.group(0))}
+        key = (attrs.get("property") or attrs.get("name") or "").strip().lower()
+        val = (attrs.get("content") or "").strip()
+        if key and val:
+            tags.append((key, val))
+    return tags
+
+
+def _parse_ld_and_meta_note(html: str, preferred_id: str) -> Optional[Dict[str, Any]]:
+    """Fallback parser extracting media URLs from JSON-LD and OpenGraph meta tags."""
+    title = ""
+    video_urls: List[str] = []
+    img_urls: List[str] = []
+    thumb_urls: List[str] = []
+
+    for match in _LD_JSON_RE.finditer(html):
+        raw = html_lib.unescape(match.group(1)).strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+        items = data if isinstance(data, list) else [data]
+        for obj in items:
+            if not isinstance(obj, dict):
+                continue
+            if not title:
+                title = str(obj.get("headline") or obj.get("name") or obj.get("description") or "").strip()
+            c_url = _clean_xhs_media_url(obj.get("contentUrl") or "")
+            if c_url and urlparse(c_url).hostname:
+                video_urls.append(c_url)
+            t_val = obj.get("thumbnailUrl")
+            t_list = t_val if isinstance(t_val, list) else [t_val]
+            for tu in t_list:
+                cleaned = _clean_xhs_media_url(tu)
+                if _is_note_cdn_url(cleaned):
+                    thumb_urls.append(cleaned)
+            im_val = obj.get("image")
+            im_list = im_val if isinstance(im_val, list) else [im_val]
+            for iu in im_list:
+                cleaned = _clean_xhs_media_url(iu)
+                if _is_note_cdn_url(cleaned):
+                    img_urls.append(cleaned)
+
+    for key, val in _extract_meta_tags(html):
+        if key in ("og:video", "og:video:url", "og:video:secure_url"):
+            cleaned = _clean_xhs_media_url(val)
+            if cleaned and urlparse(cleaned).hostname:
+                video_urls.append(cleaned)
+        elif key == "og:image":
+            cleaned = _clean_xhs_media_url(val)
+            if _is_note_cdn_url(cleaned):
+                img_urls.append(cleaned)
+        elif key in ("og:title", "og:description") and not title:
+            title = val
+
+    video_urls = dedupe_keep_order(video_urls)
+    img_urls = dedupe_keep_order(img_urls or thumb_urls)
+    if not video_urls and not img_urls:
+        return None
+
+    note: Dict[str, Any] = {
+        "noteId": preferred_id or "xhs",
+        "title": title,
+        "type": "video" if video_urls else "normal",
+        "imageList": [{"urlDefault": u, "url": u} for u in img_urls],
+    }
+    if video_urls:
+        note["video"] = {"media": {"stream": {"h264": [{"masterUrl": u} for u in video_urls]}}}
+    return note
+
+
+def _parse_note_dict(note: Dict[str, Any], preferred_id: str, config: Config) -> ExtractResult:
+    """Convert a resolved Xiaohongshu note dictionary into an ExtractResult."""
     item_id = str(note.get("noteId") or note.get("id") or preferred_id or "xhs")
-    title = str(note.get("title") or note.get("desc") or "").strip()
-    author = str((note.get("user") or {}).get("nickname") or "").strip()
+    raw_title = str(note.get("title") or note.get("desc") or "").strip()
+    title = re.sub(r"\s+-\s*小红书$", "", raw_title).strip() or raw_title
+    user = note.get("user")
+    if isinstance(user, dict):
+        author = str(user.get("nickname") or user.get("nickName") or user.get("name") or "").strip()
+    else:
+        author = ""
 
     assets: List[MediaAsset] = []
     image_list = note.get("imageList")
@@ -308,17 +458,178 @@ def parse_xhs_state(state: Dict[str, Any], preferred_id: str, config: Config) ->
     )
 
 
+def parse_xhs_state(state: Dict[str, Any], preferred_id: str, config: Config) -> ExtractResult:
+    """Parse decoded __INITIAL_STATE__ into ExtractResult."""
+    note = _find_note_obj(state, preferred_id)
+    if not note:
+        raise ExtractionError("未在小红书页面中找到笔记内容，可能是链接已失效、需要登录态或触发了滑块验证。")
+    return _parse_note_dict(note, preferred_id, config)
+
+
+def _recover_target_url(resp_url: str, fallback_url: str) -> str:
+    """Recover canonical note URL with xsec_token even when redirected to /404 or /login."""
+    raw = resp_url or ""
+    for candidate in (raw, unquote(raw)):
+        m = re.search(r"(?:redirectPath|originalUrl)=([^&\s]+)", candidate)
+        if m:
+            inner = unquote(m.group(1))
+            if inner.startswith("/"):
+                inner = "https://www.xiaohongshu.com" + inner
+            elif inner.startswith("http://www.xiaohongshu.com/"):
+                inner = "https://" + inner[len("http://") :]
+            if _NOTE_PATH_RE.search(inner):
+                return inner
+    path = (urlparse(raw).path or "").lower()
+    if raw and "/404" not in path and "/login" not in path and _NOTE_PATH_RE.search(raw):
+        return raw
+    return fallback_url
+
+
+def _alt_route_url(note_url: str) -> str:
+    """Swap between /discovery/item/ and /explore/ while preserving query params like xsec_token."""
+    if "/discovery/item/" in note_url:
+        return note_url.replace("/discovery/item/", "/explore/", 1)
+    if "/explore/" in note_url:
+        return note_url.replace("/explore/", "/discovery/item/", 1)
+    return ""
+
+
+def _is_blocked_xhs_response(resp_url: str, html: str) -> bool:
+    path = (urlparse(resp_url or "").path or "").lower()
+    if "/404" in path or "/login" in path or "/website-login" in path:
+        return True
+    return "安全限制" in html or "验证码" in html
+
+
+def _try_extract_ssr(html: str, preferred_id: str, config: Config) -> Optional[ExtractResult]:
+    for parser in (_parse_xhs_state, _parse_xhs_setup_state):
+        try:
+            state = parser(html)
+        except Exception:
+            state = None
+        if not state:
+            continue
+        note = _find_note_obj(state, preferred_id)
+        if not note:
+            continue
+        try:
+            return _parse_note_dict(note, preferred_id, config)
+        except ExtractionError:
+            continue
+    return None
+
+
+def _try_extract_meta(html: str, preferred_id: str, config: Config) -> Optional[ExtractResult]:
+    meta_note = _parse_ld_and_meta_note(html, preferred_id)
+    if not meta_note:
+        return None
+    try:
+        return _parse_note_dict(meta_note, preferred_id, config)
+    except ExtractionError:
+        return None
+
+
+def _fetch_xhs(
+    client: HttpClient,
+    target_url: str,
+    headers: Dict[str, str],
+    mobile: bool,
+    use_proxy: bool,
+):
+    if not use_proxy:
+        try:
+            return client.get(target_url, headers=headers, mobile=mobile, follow_redirects=True, use_proxy=False)
+        except TypeError:
+            pass
+    return client.get(target_url, headers=headers, mobile=mobile, follow_redirects=True)
+
+
 def extract_xiaohongshu(url: str, client: HttpClient, config: Config) -> ExtractResult:
-    """Fetch Xiaohongshu share link and extract watermark-free images/videos."""
-    resp = client.get(url, headers=XHS_DL_HEADERS, mobile=False, follow_redirects=True)
-    html = resp.text()
+    """Fetch Xiaohongshu share link across PC web and mobile H5 SSR with resilient fallbacks."""
+    url = url.strip()
+    first_resp_url = ""
+    meta_fallback: Optional[ExtractResult] = None
+    saw_block = False
+    saw_html = False
+    last_http_error: Optional[Exception] = None
+    tried: Set[Tuple[str, bool, bool, bool]] = set()
 
-    if "/404" in resp.url or "安全限制" in html or "验证码" in html:
-        raise ExtractionError("小红书页面被拦截或需要登录验证，请在 config.json 配置 xhs_cookie 后重试。")
+    def _run_attempt(target_url: str, headers: Dict[str, str], mobile: bool, use_proxy: bool) -> Optional[ExtractResult]:
+        nonlocal first_resp_url, meta_fallback, saw_block, saw_html, last_http_error
+        strip_cookie = "Cookie" in headers and headers["Cookie"] == ""
+        key = (target_url, mobile, strip_cookie, use_proxy)
+        if not target_url or key in tried:
+            return None
+        tried.add(key)
 
-    state = _parse_xhs_state(html)
-    if not state:
-        raise ExtractionError("未找到小红书笔记状态数据 (__INITIAL_STATE__)，可能触发风控或链接缺少访问参数。")
+        try:
+            resp = _fetch_xhs(client, target_url, headers, mobile, use_proxy)
+        except HttpError as e:
+            last_http_error = e
+            return None
 
-    note_id = _extract_note_id(resp.url) or _extract_note_id(url)
-    return parse_xhs_state(state, note_id, config)
+        saw_html = True
+        if not first_resp_url:
+            first_resp_url = resp.url or target_url
+        html = resp.text()
+        pref_id = _extract_note_id(resp.url or target_url) or _extract_note_id(url)
+
+        path = (urlparse(resp.url or "").path or "").lower()
+        is_error_route = "/404" in path or "/login" in path or "/website-login" in path
+        if not is_error_route:
+            ssr_res = _try_extract_ssr(html, pref_id, config)
+            if ssr_res is not None:
+                return ssr_res
+            if meta_fallback is None:
+                meta_fallback = _try_extract_meta(html, pref_id, config)
+
+        if _is_blocked_xhs_response(resp.url or "", html):
+            saw_block = True
+        return None
+
+    # Primary fast path: desktop PC Web SSR (highest video bitrate + author.nickname).
+    res = _run_attempt(url, XHS_DL_HEADERS, mobile=False, use_proxy=True)
+    if res is not None:
+        return res
+
+    recovered_url = _recover_target_url(first_resp_url, url)
+    alt_url = _alt_route_url(recovered_url)
+    cookie_fn = getattr(client, "cookie_for_url", None)
+    has_cookie = bool(
+        callable(cookie_fn)
+        and (
+            cookie_fn(recovered_url)
+            or cookie_fn(url)
+            or cookie_fn("https://www.xiaohongshu.com/")
+        )
+    )
+    has_proxy = bool(urllib.request.getproxies())
+
+    attempts: List[Tuple[str, Dict[str, str], bool, bool]] = [
+        (recovered_url, {}, True, True),
+    ]
+    if url != recovered_url:
+        attempts.append((url, {}, True, True))
+    if alt_url:
+        attempts.append((alt_url, {}, True, True))
+        attempts.append((alt_url, XHS_DL_HEADERS, False, True))
+    if has_cookie:
+        attempts.append((recovered_url, {"Cookie": ""}, True, True))
+        attempts.append((recovered_url, {**XHS_DL_HEADERS, "Cookie": ""}, False, True))
+    if has_proxy:
+        attempts.append((recovered_url, {}, True, False))
+        attempts.append((recovered_url, XHS_DL_HEADERS, False, False))
+
+    for target_url, headers, mobile, use_proxy in attempts:
+        res = _run_attempt(target_url, headers, mobile=mobile, use_proxy=use_proxy)
+        if res is not None:
+            return res
+
+    if meta_fallback is not None:
+        return meta_fallback
+
+    if saw_block:
+        raise ExtractionError("小红书页面被拦截或需要登录验证（若开启了代理/VPN 请尝试分流或直连，或在 config.json 配置有效 xhs_cookie 后重试）。")
+    if last_http_error is not None and not saw_html:
+        raise last_http_error
+    raise ExtractionError("未在小红书页面中找到笔记内容，可能是链接已失效、需要登录态或触发了滑块验证。")
