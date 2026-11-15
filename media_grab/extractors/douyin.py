@@ -86,8 +86,15 @@ _IMG_RESIZE_TOKEN_RE = re.compile(
 def _clean_video_url(url: str) -> str:
     u = normalize_http_url(url)
     u = re.sub(r"([/?&=])playwm([/?&=]|$)", r"\1play\2", u)
-    u = re.sub(r"([?&])watermark=1\b", r"\1watermark=0", u)
+    u = re.sub(r"([?&])watermark=[1-9]\d*\b", r"\1watermark=0", u)
     return u
+
+
+def _is_suspected_watermarked_video(url: str) -> int:
+    low = (url or "").lower()
+    if any(tok in low for tok in ("/mps/logo/", "playwm", "watermark=1", "logo_name=")):
+        return 1
+    return 0
 
 
 def _gear_resolution_score(gear_name: str, urls: Optional[List[str]] = None) -> int:
@@ -172,7 +179,7 @@ def _collect_video_urls(video_obj: Dict[str, Any]) -> List[str]:
     for _, urls in addr_candidates:
         candidates.extend(urls)
 
-    return dedupe_keep_order(candidates)
+    return sorted(dedupe_keep_order(candidates), key=_is_suspected_watermarked_video)
 
 
 def _rank_image_urls(urls: List[str], prefer_webp: bool = False) -> List[str]:
@@ -184,8 +191,11 @@ def _rank_image_urls(urls: List[str], prefer_webp: bool = False) -> List[str]:
         has_wm = 1 if (
             "watermark" in low
             or "_wm" in low
+            or "/wm/" in low
             or "tplv-dy-water" in low
+            or "aweme-water" in low
             or "water-mark" in low
+            or "water_mark" in low
         ) else 0
         is_webp = 1 if ".webp" in low else 0
         fmt_rank = (0 if is_webp else 1) if prefer_webp else is_webp
@@ -230,7 +240,10 @@ def parse_douyin_payload(data: Dict[str, Any], fallback_id: str, config: Config)
             if not isinstance(img, dict):
                 continue
             origin_urls = list((img.get("origin_url") or {}).get("url_list") or []) if isinstance(img.get("origin_url"), dict) else []
-            raw_urls = list(img.get("download_url_list") or []) + origin_urls + list(img.get("url_list") or [])
+            # On Douyin image slides, download_url_list points to watermarked variants while origin_url/url_list are clean.
+            clean_urls = origin_urls + list(img.get("url_list") or [])
+            dl_urls = list(img.get("download_url_list") or [])
+            raw_urls = clean_urls or dl_urls
             ranked = _rank_image_urls(raw_urls, prefer_webp=False)
             if ranked:
                 assets.append(

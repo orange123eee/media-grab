@@ -1434,8 +1434,7 @@ class JobStore:
     def candidate_urls_for(self, sa: StoredAsset) -> List[str]:
         with self._lock:
             exact = sa.resolved_url
-            pref = self._preferred_hosts.get((sa.platform, False)) if sa.asset.kind == "image" else None
-        return self._prioritize_urls(list(sa.asset.urls), exact, pref)
+        return self._prioritize_urls(list(sa.asset.urls), exact, None)
 
     def thumb_urls_for(self, sa: StoredAsset) -> List[str]:
         if not sa.asset.thumb_urls:
@@ -1452,8 +1451,8 @@ class JobStore:
     def remember_winning(self, sa: StoredAsset, url: str, ext: str, is_thumb: bool = False) -> None:
         host = (urlparse(url).hostname or "").lower()
         with self._lock:
-            if host and sa.platform and (is_thumb or sa.asset.kind == "image"):
-                self._preferred_hosts[(sa.platform, bool(is_thumb))] = host
+            if host and sa.platform and is_thumb:
+                self._preferred_hosts[(sa.platform, True)] = host
             if is_thumb:
                 sa.resolved_thumb_url = url
             else:

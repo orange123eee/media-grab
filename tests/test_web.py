@@ -469,6 +469,30 @@ class WebServerTests(unittest.TestCase):
         cands = self.state.store.candidate_urls_for(job2.assets[0])
         self.assertEqual(cands[0], "https://hi.example/4k.mp4")
 
+    def test_image_host_promotion_never_downgrades_next_job(self):
+        job1 = self.state.store.put_result(
+            ExtractResult(
+                platform="douyin",
+                item_id="img1",
+                title="图集1",
+                author="a",
+                assets=[MediaAsset(kind="image", urls=["https://hi-cdn.example/orig.png", "https://fallback-cdn.example/720.jpg"], default_ext=".jpg")],
+            )
+        )
+        self.state.store.remember_winning(job1.assets[0], "https://fallback-cdn.example/720.jpg", ".jpg", is_thumb=False)
+
+        job2 = self.state.store.put_result(
+            ExtractResult(
+                platform="douyin",
+                item_id="img2",
+                title="图集2",
+                author="a",
+                assets=[MediaAsset(kind="image", urls=["https://hi-cdn.example/orig2.png", "https://fallback-cdn.example/720_2.jpg"], default_ext=".jpg")],
+            )
+        )
+        cands = self.state.store.candidate_urls_for(job2.assets[0])
+        self.assertEqual(cands[0], "https://hi-cdn.example/orig2.png")
+
 
 class OnDemandGateTests(unittest.TestCase):
     def test_gate_spawns_on_demand_and_proxies(self):

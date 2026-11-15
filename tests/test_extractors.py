@@ -185,13 +185,18 @@ class DouyinExtractorTests(unittest.TestCase):
                                 "desc": "画质自动最高",
                                 "images": [
                                     {
+                                        "origin_url": {
+                                            "url_list": [
+                                                "https://p26.douyinpic.com/pic~noop.jpeg",
+                                            ]
+                                        },
                                         "url_list": [
                                             "https://p3.douyinpic.com/pic~tplv-dy-resize-w:720.jpeg",
                                             "https://p9.douyinpic.com/pic~tplv-dy-resize-orig-s:1440:0.jpeg",
                                             "https://p6.douyinpic.com/pic~tplv-dy-water-v2:2160:0.jpeg",
                                         ],
                                         "download_url_list": [
-                                            "https://p26.douyinpic.com/pic~noop.jpeg",
+                                            "https://p26.douyinpic.com/watermarked~noop.jpeg",
                                         ],
                                     },
                                     {
@@ -199,6 +204,9 @@ class DouyinExtractorTests(unittest.TestCase):
                                             "https://p3.douyinpic.com/p2~tplv-dy-shrink:640:800.jpeg",
                                             "https://p9.douyinpic.com/p2~tplv-dy-resize-w:1440.webp",
                                             "https://p9.douyinpic.com/p2~tplv-dy-resize-w:1080.jpeg",
+                                        ],
+                                        "download_url_list": [
+                                            "https://p26.douyinpic.com/p2_wm~noop.jpeg",
                                         ],
                                     },
                                 ],
@@ -210,11 +218,30 @@ class DouyinExtractorTests(unittest.TestCase):
         }
         res_imgs = parse_douyin_payload(payload, "", Config())
         self.assertEqual(res_imgs.assets[0].urls[0], "https://p26.douyinpic.com/pic~noop.jpeg")
+        self.assertNotIn("https://p26.douyinpic.com/watermarked~noop.jpeg", res_imgs.assets[0].urls)
         self.assertGreater(
             res_imgs.assets[0].urls.index("https://p6.douyinpic.com/pic~tplv-dy-water-v2:2160:0.jpeg"),
             res_imgs.assets[0].urls.index("https://p3.douyinpic.com/pic~tplv-dy-resize-w:720.jpeg"),
         )
         self.assertEqual(res_imgs.assets[1].urls[0], "https://p9.douyinpic.com/p2~tplv-dy-resize-w:1440.webp")
+        self.assertNotIn("https://p26.douyinpic.com/p2_wm~noop.jpeg", res_imgs.assets[1].urls)
+
+        # Signed CDN paths with /mps/logo/ must always rank behind clean streams even if bitrate/size is larger.
+        wm_vid_payload = {
+            "aweme_id": "7400112245",
+            "video": {
+                "play_addr": {
+                    "width": 1080,
+                    "height": 1920,
+                    "url_list": [
+                        "https://v9-chc.douyinvod.com/hash/video/cn/mps/logo/r/p/test.mp4",
+                        "https://v6.douyinvod.com/hash/video/tos/cn/clean.mp4",
+                    ],
+                },
+            },
+        }
+        wm_vid_res = parse_douyin_payload(wm_vid_payload, "", Config())
+        self.assertEqual(wm_vid_res.assets[0].urls[0], "https://v6.douyinvod.com/hash/video/tos/cn/clean.mp4")
 
         vid_payload = {
             "aweme_id": "7400112244",
