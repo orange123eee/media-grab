@@ -87,13 +87,13 @@ def _extract_image_token(url: str) -> str:
     return path.split("!", 1)[0]
 
 
-def _build_image_candidates(img: Dict[str, Any]) -> List[str]:
-    """Generate candidate URLs prioritizing watermark-free original PNG/JPG before default CDN links."""
+def _collect_raw_image_urls(img: Dict[str, Any], prefer_preview: bool = False) -> List[str]:
+    """Collect raw infoList/fallback CDN URLs ordered by high-res or preview preference."""
     raw_urls: List[str] = []
     info_list = img.get("infoList")
+    scenes = ("WB_PRV", "WB_DFT") if prefer_preview else ("WB_DFT", "WB_PRV")
     if isinstance(info_list, list):
-        # WB_DFT (default high-res) before WB_PRV (preview)
-        for scene in ("WB_DFT", "WB_PRV"):
+        for scene in scenes:
             for entry in info_list:
                 if isinstance(entry, dict) and entry.get("imageScene") == scene and entry.get("url"):
                     raw_urls.append(normalize_http_url(entry["url"]))
@@ -101,22 +101,39 @@ def _build_image_candidates(img: Dict[str, Any]) -> List[str]:
             if isinstance(entry, dict) and entry.get("url"):
                 raw_urls.append(normalize_http_url(entry["url"]))
 
-    for key in ("urlDefault", "urlPre", "url"):
+    keys = ("urlPre", "urlDefault", "url") if prefer_preview else ("urlDefault", "urlPre", "url")
+    for key in keys:
         if img.get(key):
             raw_urls.append(normalize_http_url(img[key]))
+    return dedupe_keep_order(raw_urls)
 
-    candidates: List[str] = []
-    trace_id = str(img.get("fileId") or img.get("traceId") or "").strip()
-    if trace_id:
-        candidates.append(f"https://sns-img-hw.xhscdn.com/{trace_id}?imageView2/2/w/format/png")
-        candidates.append(f"https://ci.xiaohongshu.com/{trace_id}?imageView2/2/w/format/png")
-        candidates.append(f"https://ci.xiaohongshu.com/{trace_id}")
 
+def _collect_image_tokens(img: Dict[str, Any], raw_urls: List[str]) -> List[str]:
+    tokens: List[str] = []
+    primary = str(img.get("fileId") or img.get("traceId") or "").strip()
+    if primary:
+        tokens.append(primary)
     for u in raw_urls:
         token = _extract_image_token(u)
         if token:
-            candidates.append(f"https://sns-img-hw.xhscdn.com/{token}?imageView2/2/w/format/png")
-            candidates.append(f"https://ci.xiaohongshu.com/{token}?imageView2/2/w/format/png")
+            tokens.append(token)
+    return dedupe_keep_order(tokens)
+
+
+def _build_image_candidates(img: Dict[str, Any]) -> List[str]:
+    """Generate candidate URLs prioritizing watermark-free original PNG/JPG before default CDN links."""
+    raw_urls = _collect_raw_image_urls(img, prefer_preview=False)
+    tokens = _collect_image_tokens(img, raw_urls)
+
+    candidates: List[str] = []
+    primary = str(img.get("fileId") or img.get("traceId") or "").strip()
+    for token in tokens:
+        candidates.append(f"https://sns-img-hw.xhscdn.com/{token}?imageView2/2/w/format/png")
+        candidates.append(f"https://ci.xiaohongshu.com/{token}?imageView2/2/w/format/png")
+        if token == primary:
+            candidates.append(f"https://ci.xiaohongshu.com/{token}")
+
+    for u in raw_urls:
         # Try removing watermark suffix (!nd_dft_wlteh_...) when path has no signed timestamp prefix
         if "!" in u:
             u_path = urlparse(u).path.lstrip("/")
@@ -127,6 +144,19 @@ def _build_image_candidates(img: Dict[str, Any]) -> List[str]:
 
     candidates.extend(raw_urls)
     return dedupe_keep_order(candidates)
+
+
+def _build_thumb_candidates(img: Dict[str, Any]) -> List[str]:
+    """Generate fast watermark-free 720w WebP preview URLs for quick gallery loading."""
+    raw_urls = _collect_raw_image_urls(img, prefer_preview=True)
+    tokens = _collect_image_tokens(img, raw_urls)
+
+    thumbs: List[str] = []
+    for token in tokens:
+        thumbs.append(f"https://sns-img-hw.xhscdn.com/{token}?imageView2/2/w/720/format/webp")
+        thumbs.append(f"https://ci.xiaohongshu.com/{token}?imageView2/2/w/720/format/webp")
+    thumbs.extend(raw_urls)
+    return dedupe_keep_order(thumbs)
 
 
 def parse_xhs_state(state: Dict[str, Any], preferred_id: str, config: Config) -> ExtractResult:
@@ -173,6 +203,7 @@ def parse_xhs_state(state: Dict[str, Any], preferred_id: str, config: Config) ->
                         default_ext=".jpg",
                         headers=XHS_DL_HEADERS,
                         mobile=False,
+                        thumb_urls=_build_thumb_candidates(img),
                     )
                 )
             if config.save_live_photo_video and (img.get("livePhoto") or isinstance(img.get("stream"), dict)):

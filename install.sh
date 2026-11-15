@@ -115,9 +115,9 @@ bashrc.write_text((text + "\n\n" if text else "") + block, encoding="utf-8")
 PYEOF
 
 if [ "$UPDATE_ONLY" -eq 0 ]; then
-  "$TARGET_BIN/gw" || true
+  "$TARGET_BIN/gw" --restart || true
 else
-  "$TARGET_BIN/gw" --daemon-only >/dev/null 2>&1 || true
+  "$TARGET_BIN/gw" --restart --daemon-only >/dev/null 2>&1 || true
 fi
 
 echo "[5/5] 安装完成！"

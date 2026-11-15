@@ -151,6 +151,7 @@ class DouyinExtractorTests(unittest.TestCase):
         res = parse_douyin_payload(parsed, "", Config(save_live_photo_video=True))
         self.assertEqual([a.kind for a in res.assets], ["image", "live_video"])
         self.assertEqual(res.assets[0].urls[0], "https://p9.douyinpic.com/img/a.jpeg")
+        self.assertEqual(res.assets[0].thumb_urls[0], "https://p3.douyinpic.com/img/a.webp")
         self.assertEqual(res.assets[1].urls[0], "https://aweme.snssdk.com/aweme/v1/play/?video_id=live1")
 
     def test_x_platform_pending_error(self):
@@ -263,6 +264,10 @@ class XiaohongshuExtractorTests(unittest.TestCase):
         )
         self.assertFalse(any("0d1593714808ab35a7e1f1ca309afc31" in u and "sns-img-hw" in u for u in signed_urls))
         self.assertFalse(any("sns-webpic-qc.xhscdn.com" in u and "!nd_" not in u for u in signed_urls))
+        self.assertEqual(
+            res_signed.assets[0].thumb_urls[0],
+            "https://sns-img-hw.xhscdn.com/1040g2sg3272o559176hg5pvasid1i1niileucv8?imageView2/2/w/720/format/webp",
+        )
 
     def test_parse_xhs_video_picks_highest_resolution_and_skips_cover_image(self):
         state = {

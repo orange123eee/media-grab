@@ -21,6 +21,7 @@ class MediaAsset:
     default_ext: str
     headers: Dict[str, str] = field(default_factory=dict)
     mobile: bool = False
+    thumb_urls: List[str] = field(default_factory=list)
 
 
 @dataclass

@@ -108,15 +108,16 @@ def _collect_video_urls(video_obj: Dict[str, Any]) -> List[str]:
     return dedupe_keep_order(candidates)
 
 
-def _rank_image_urls(urls: List[str]) -> List[str]:
-    """Prefer watermark-free and widely compatible JPG/PNG formats over WebP."""
+def _rank_image_urls(urls: List[str], prefer_webp: bool = False) -> List[str]:
+    """Order watermark-free URLs preferring JPG/PNG for downloads or WebP for lightweight previews."""
     cleaned = [normalize_http_url(u) for u in urls if u]
 
     def _priority(u: str) -> tuple:
         low = u.lower()
         has_wm = 1 if ("watermark" in low or "_wm" in low) else 0
         is_webp = 1 if ".webp" in low else 0
-        return (has_wm, is_webp)
+        fmt_rank = (0 if is_webp else 1) if prefer_webp else is_webp
+        return (has_wm, fmt_rank)
 
     return dedupe_keep_order(sorted(cleaned, key=_priority))
 
@@ -138,7 +139,7 @@ def parse_douyin_payload(data: Dict[str, Any], fallback_id: str, config: Config)
             if not isinstance(img, dict):
                 continue
             raw_urls = list(img.get("url_list") or []) + list(img.get("download_url_list") or [])
-            ranked = _rank_image_urls(raw_urls)
+            ranked = _rank_image_urls(raw_urls, prefer_webp=False)
             if ranked:
                 assets.append(
                     MediaAsset(
@@ -147,6 +148,7 @@ def parse_douyin_payload(data: Dict[str, Any], fallback_id: str, config: Config)
                         default_ext=".jpg",
                         headers=DOUYIN_DL_HEADERS,
                         mobile=True,
+                        thumb_urls=_rank_image_urls(raw_urls, prefer_webp=True),
                     )
                 )
             if config.save_live_photo_video and isinstance(img.get("video"), dict):

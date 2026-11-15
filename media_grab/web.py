@@ -23,7 +23,7 @@ from . import android
 from .config import DEFAULT_CONFIG_DIR, Config, load_config
 from .extractors import ExtractResult, ExtractionError, MediaAsset, extract
 from .http_client import HttpClient, HttpError
-from .utils import extract_url, sanitize_filename
+from .utils import dedupe_keep_order, extract_url, sanitize_filename
 
 APP_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
   <rect width="128" height="128" rx="28" fill="#171a20"/>
@@ -46,7 +46,7 @@ MANIFEST_JSON = json.dumps(
     ensure_ascii=False,
 )
 
-SW_JS = """const CACHE_NAME = 'media-grab-shell-v1';
+SW_JS = """const CACHE_NAME = 'media-grab-shell-v2';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -95,71 +95,197 @@ INDEX_HTML = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0f1115">
+<meta name="theme-color" content="#0b0e14">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <title>无水印提取 · 抖音 / 小红书</title>
 <style>
-  :root { color-scheme: dark; --bg:#0f1115; --card:#171a20; --line:#262c37; --text:#e8ecf3; --muted:#8f98a8; --accent:#2f6fd0; --accent2:#1d3a5f; --ok:#3fb950; --err:#f85149; }
+  :root {
+    color-scheme: dark;
+    --bg: #0b0e14;
+    --card: rgba(23, 27, 36, 0.9);
+    --card-solid: #171b24;
+    --line: rgba(255, 255, 255, 0.08);
+    --line-hi: rgba(96, 165, 250, 0.45);
+    --text: #eef2f8;
+    --muted: #8b95a8;
+    --accent: #3b82f6;
+    --accent-hi: #2563eb;
+    --accent-soft: rgba(59, 130, 246, 0.16);
+    --ok: #3fb950;
+    --ok-soft: rgba(63, 185, 80, 0.14);
+    --warn: #e3b341;
+    --err: #f85149;
+  }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  body { margin:0; padding:18px 14px 72px; background:var(--bg); color:var(--text); font:15px/1.55 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
-  .wrap { max-width:680px; margin:0 auto; }
-  .hd { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }
-  h1 { font-size:20px; margin:0; letter-spacing:.2px; }
-  .sub { font-size:12.5px; color:var(--muted); margin-top:2px; }
-  .pill { border:1px solid var(--line); background:var(--card); color:var(--text); border-radius:999px; padding:7px 13px; font-size:12.5px; cursor:pointer; white-space:nowrap; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; margin-bottom:14px; }
-  textarea { width:100%; min-height:92px; border:1px solid var(--line); background:#0b0d11; color:var(--text); border-radius:12px; padding:12px; font:14px/1.5 inherit; resize:vertical; outline:none; }
-  textarea:focus { border-color:var(--accent); }
-  .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
-  button, a.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:44px; border-radius:11px; font:600 14.5px/1 inherit; padding:0 15px; border:1px solid var(--line); background:#222732; color:var(--text); text-decoration:none; cursor:pointer; }
-  button.pri, a.btn.pri { background:var(--accent); border-color:var(--accent); color:#fff; flex:1; }
-  button.sec { flex:1; }
-  button:disabled { opacity:.55; cursor:not-allowed; }
-  .hint { margin-top:9px; font-size:12.5px; color:var(--muted); min-height:18px; }
-  .err { display:none; margin-top:10px; padding:11px 12px; border-radius:11px; background:rgba(248,81,73,.12); border:1px solid rgba(248,81,73,.35); color:#ffb3ae; font-size:13px; }
-  .err.show { display:block; }
-  .err button { min-height:32px; padding:0 10px; font-size:12px; margin-top:8px; }
-  .meta { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:10px; }
-  .badge { display:inline-block; font-size:11.5px; padding:2px 8px; border-radius:999px; background:var(--accent2); color:#8ac4ff; margin-right:6px; vertical-align:1px; }
-  .title { font-weight:600; font-size:15.5px; word-break:break-word; }
-  .author { font-size:12.5px; color:var(--muted); margin-top:2px; }
-  .acts { display:flex; gap:8px; margin:10px 0 14px; flex-wrap:wrap; }
-  .vbox { background:#000; border-radius:12px; overflow:hidden; margin-bottom:10px; }
-  .vbox video { width:100%; max-height:62vh; display:block; background:#000; }
-  .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
-  @media (min-width:560px) { .grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
-  .item { background:#0e1015; border:1px solid var(--line); border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
-  .thumb { position:relative; aspect-ratio:3/4; background:#0b0d11; overflow:hidden; cursor:zoom-in; }
-  .thumb img { width:100%; height:100%; object-fit:cover; display:block; }
-  .tag { position:absolute; left:7px; top:7px; font-size:11px; padding:2px 7px; border-radius:6px; background:rgba(0,0,0,.65); color:#fff; }
-  .item-ft { padding:8px; display:flex; flex-direction:column; gap:6px; }
-  .item-ft a.btn { min-height:36px; font-size:13px; width:100%; }
-  .modal { position:fixed; inset:0; background:rgba(0,0,0,.72); display:none; align-items:flex-end; justify-content:center; z-index:99; padding:12px; }
-  .modal.open { display:flex; }
-  @media (min-width:560px) { .modal { align-items:center; } }
-  .sheet { width:100%; max-width:520px; background:var(--card); border:1px solid var(--line); border-radius:18px; padding:16px; max-height:86vh; overflow:auto; }
-  .sheet h2 { margin:0 0 10px; font-size:17px; }
-  .field { margin-bottom:12px; }
-  .field label { display:flex; justify-content:space-between; font-size:13px; color:var(--muted); margin-bottom:5px; }
-  .field label b { color:var(--ok); font-weight:500; }
-  .field label b.off { color:var(--muted); }
-  .field textarea { min-height:66px; font-size:12.5px; }
-  .chk { display:flex; align-items:center; gap:8px; font-size:13.5px; margin:8px 0 14px; }
-  .lightbox { position:fixed; inset:0; background:rgba(0,0,0,.92); display:none; align-items:center; justify-content:center; z-index:120; padding:14px; }
-  .lightbox.open { display:flex; }
-  .lightbox img { max-width:100%; max-height:100%; object-fit:contain; border-radius:8px; }
+  body {
+    margin: 0;
+    padding: 16px 14px 86px;
+    background:
+      radial-gradient(600px 320px at 15% -10%, rgba(59, 130, 246, .18), transparent 65%),
+      radial-gradient(500px 260px at 90% 5%, rgba(255, 36, 66, .12), transparent 65%),
+      var(--bg);
+    color: var(--text);
+    font: 15px/1.55 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 680px; margin: 0 auto; }
+  .hd { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .logo {
+    width: 38px; height: 38px; border-radius: 12px; flex-shrink: 0;
+    background: linear-gradient(135deg, #2563eb, #06b6d4);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 6px 18px rgba(37, 99, 235, .3);
+  }
+  .logo svg { width: 22px; height: 22px; }
+  h1 { font-size: 19px; margin: 0; letter-spacing: .2px; }
+  .sub { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; margin-top: 1px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; transition: background .2s; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px rgba(63, 185, 80, .65); }
+  .dot.off { background: var(--err); }
+  .hd-acts { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+  .pill {
+    border: 1px solid var(--line); background: var(--card); color: var(--text);
+    border-radius: 999px; padding: 7px 12px; font-size: 12.5px; font-weight: 500;
+    cursor: pointer; white-space: nowrap; min-height: 34px;
+  }
+  .pill:active { opacity: .8; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 18px;
+    padding: 15px; margin-bottom: 14px; backdrop-filter: blur(12px);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, .24);
+  }
+  textarea {
+    width: 100%; min-height: 92px; border: 1px solid var(--line); background: rgba(9, 12, 18, .85);
+    color: var(--text); border-radius: 13px; padding: 12px; font: 14px/1.5 inherit;
+    resize: vertical; outline: none; transition: border-color .18s, box-shadow .18s;
+  }
+  textarea:focus { border-color: var(--line-hi); box-shadow: 0 0 0 3px rgba(59, 130, 246, .15); }
+  .detect {
+    display: none; align-items: center; justify-content: space-between; gap: 8px;
+    margin-top: 9px; padding: 8px 11px; border-radius: 10px; font-size: 12.5px;
+    background: var(--ok-soft); border: 1px solid rgba(63, 185, 80, .28); color: #9ae6b4;
+  }
+  .detect.warn { background: rgba(227, 179, 65, .1); border-color: rgba(227, 179, 65, .28); color: #f6d57a; }
+  .detect.show { display: flex; }
+  .detect-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .detect-btn {
+    border: 1px solid rgba(255,255,255,.16); background: rgba(255,255,255,.08); color: #fff;
+    border-radius: 7px; padding: 4px 8px; font-size: 11.5px; min-height: 26px; cursor: pointer; flex-shrink: 0;
+  }
+  .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  button, a.btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    min-height: 44px; border-radius: 12px; font: 600 14.5px/1 inherit; padding: 0 15px;
+    border: 1px solid var(--line); background: #222836; color: var(--text);
+    text-decoration: none; cursor: pointer; transition: transform .08s, opacity .15s, background .15s;
+  }
+  button:active, a.btn:active { transform: scale(.985); }
+  button.pri, a.btn.pri {
+    background: linear-gradient(135deg, var(--accent), var(--accent-hi));
+    border-color: transparent; color: #fff; flex: 1.25;
+    box-shadow: 0 4px 14px rgba(37, 99, 235, .28);
+  }
+  button.sec { flex: 1; }
+  button:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+  .prog { display: none; height: 3px; border-radius: 3px; background: rgba(255,255,255,.06); overflow: hidden; margin-top: 11px; }
+  .prog.show { display: block; }
+  .prog > i {
+    display: block; height: 100%; width: 42%; border-radius: 3px;
+    background: linear-gradient(90deg, transparent, #60a5fa, #38bdf8, transparent);
+    animation: slide 1.1s ease-in-out infinite;
+  }
+  @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(260%); } }
+  .hint { margin-top: 9px; font-size: 12.5px; color: var(--muted); min-height: 18px; }
+  .err { display: none; margin-top: 10px; padding: 11px 12px; border-radius: 11px; background: rgba(248, 81, 73, .12); border: 1px solid rgba(248, 81, 73, .35); color: #ffb3ae; font-size: 13px; }
+  .err.show { display: block; }
+  .err button { min-height: 32px; padding: 0 10px; font-size: 12px; margin-top: 8px; }
+  .meta { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  .badge { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--accent-soft); color: #8ac4ff; margin-right: 6px; vertical-align: 1px; }
+  .badge.xhs { background: rgba(255, 36, 66, .18); color: #ff6b81; }
+  .badge.dy { background: linear-gradient(135deg, rgba(37, 244, 238, .18), rgba(254, 44, 85, .18)); color: #6ef3ef; }
+  .title { font-weight: 600; font-size: 15.5px; word-break: break-word; }
+  .author { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+  .acts { display: flex; gap: 8px; margin: 10px 0 14px; flex-wrap: wrap; }
+  .vbox { background: #000; border-radius: 13px; overflow: hidden; margin-bottom: 10px; border: 1px solid var(--line); }
+  .vbox video { width: 100%; max-height: 62vh; display: block; background: #000; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  @media (min-width: 560px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .item { background: #0e1118; border: 1px solid var(--line); border-radius: 13px; overflow: hidden; display: flex; flex-direction: column; }
+  .thumb {
+    position: relative; aspect-ratio: 3/4; overflow: hidden; cursor: zoom-in;
+    background: linear-gradient(110deg, #121620 25%, #1a202e 45%, #121620 65%);
+    background-size: 200% 100%; animation: skel 1.3s linear infinite;
+  }
+  @keyframes skel { 0% { background-position: 180% 0; } 100% { background-position: -20% 0; } }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .22s ease; }
+  .thumb img.loaded { opacity: 1; }
+  .tag { position: absolute; left: 7px; top: 7px; font-size: 11px; padding: 2px 7px; border-radius: 6px; background: rgba(0,0,0,.62); color: #fff; backdrop-filter: blur(4px); }
+  .item-ft { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .item-ft a.btn { min-height: 36px; font-size: 12.5px; width: 100%; border-radius: 9px; }
+  .hist-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .hist-hd b { font-size: 14px; }
+  .hist-clr { background: transparent; border: none; color: var(--muted); font-size: 12px; min-height: 28px; padding: 0 6px; cursor: pointer; }
+  .hist-list { display: flex; flex-direction: column; gap: 7px; }
+  .hist-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 9px 11px; border-radius: 11px; border: 1px solid var(--line); background: rgba(11, 14, 20, .7);
+    cursor: pointer; text-align: left; width: 100%; min-height: 42px;
+  }
+  .hist-row:active { background: rgba(59, 130, 246, .12); }
+  .hist-title { font-size: 13px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .hist-time { font-size: 11.5px; color: var(--muted); flex-shrink: 0; }
+  .modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .74); display: none; align-items: flex-end; justify-content: center; z-index: 99; padding: 12px; }
+  .modal.open { display: flex; }
+  @media (min-width: 560px) { .modal { align-items: center; } }
+  .sheet { width: 100%; max-width: 520px; background: var(--card-solid); border: 1px solid var(--line); border-radius: 18px; padding: 16px; max-height: 86vh; overflow: auto; }
+  .sheet h2 { margin: 0 0 10px; font-size: 17px; }
+  .field { margin-bottom: 12px; }
+  .field label { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-bottom: 5px; }
+  .field label b { color: var(--ok); font-weight: 500; }
+  .field label b.off { color: var(--muted); }
+  .field textarea { min-height: 66px; font-size: 12.5px; }
+  .chk { display: flex; align-items: center; gap: 8px; font-size: 13.5px; margin: 8px 0 14px; }
+  .lightbox { position: fixed; inset: 0; background: rgba(0, 0, 0, .94); display: none; flex-direction: column; align-items: center; justify-content: space-between; z-index: 120; padding: 14px; }
+  .lightbox.open { display: flex; }
+  .lb-top { width: 100%; display: flex; justify-content: space-between; align-items: center; color: #fff; font-size: 14px; }
+  .lb-stage { flex: 1; width: 100%; display: flex; align-items: center; justify-content: center; position: relative; min-height: 0; margin: 8px 0; }
+  .lb-stage img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
+  .lb-nav {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    width: 40px; height: 48px; border-radius: 10px; border: 1px solid rgba(255,255,255,.18);
+    background: rgba(0,0,0,.45); color: #fff; font-size: 22px; min-height: 40px; padding: 0;
+  }
+  .lb-nav.prev { left: 4px; }
+  .lb-nav.next { right: 4px; }
+  .lb-ft { width: 100%; max-width: 360px; display: flex; gap: 8px; }
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 16px);
+    background: rgba(24, 29, 40, .96); border: 1px solid rgba(255,255,255,.14);
+    color: #fff; padding: 10px 16px; border-radius: 999px; font-size: 13px;
+    opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 150;
+    box-shadow: 0 8px 24px rgba(0,0,0,.45); white-space: nowrap; max-width: 90vw; overflow: hidden; text-overflow: ellipsis;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="hd">
-    <div>
-      <h1>无水印提取</h1>
-      <div class="sub">抖音 · 小红书 ｜ 按需后台 · 关页自停</div>
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19h14"/>
+        </svg>
+      </div>
+      <div>
+        <h1>无水印提取</h1>
+        <div class="sub"><span class="dot" id="statusDot"></span><span id="statusTxt">正在连接本地网关…</span></div>
+      </div>
     </div>
-    <div style="display:flex;gap:6px;align-items:center">
+    <div class="hd-acts">
       <button class="pill" id="stopBtn" type="button" style="display:none">关闭后台</button>
       <button class="pill" id="cfgBtn" type="button">Cookie 设置</button>
     </div>
@@ -167,7 +293,7 @@ INDEX_HTML = r"""<!doctype html>
 
   <div class="card" id="wakeBox" style="display:none;border-color:rgba(248,81,73,.45)">
     <div style="font-weight:600;margin-bottom:4px">本地解析网关尚未连接</div>
-    <div class="sub" style="margin-bottom:10px">如果手机刚重启或还没有打开过 Termux，点下方按钮唤起 Termux 后切回本页即可自动恢复连接。</div>
+    <div class="sub" style="margin-bottom:10px;display:block">如果手机刚重启或还没有打开过 Termux，点下方按钮唤起 Termux 后切回本页即可自动恢复连接。</div>
     <div class="row" style="margin-top:0">
       <a class="btn pri" href="intent://#Intent;package=com.termux;end">⚡ 一键唤醒 Termux 服务</a>
       <button type="button" id="retryConnBtn">重试连接</button>
@@ -175,17 +301,30 @@ INDEX_HTML = r"""<!doctype html>
   </div>
 
   <div class="card">
-    <textarea id="inp" placeholder="粘贴抖音或小红书分享文案 / 链接（支持整段带文字口令）"></textarea>
+    <textarea id="inp" placeholder="直接粘贴抖音 / 小红书分享文案或链接（不用手动删掉里面的中文，系统会自动识别）"></textarea>
+    <div class="detect" id="detectBar">
+      <span class="detect-txt" id="detectTxt"></span>
+      <button type="button" class="detect-btn" id="trimUrlBtn" style="display:none">仅留纯链接</button>
+    </div>
     <div class="row">
       <button type="button" id="clrBtn">清空</button>
       <button type="button" class="sec" id="pasteBtn">读取剪贴板</button>
-      <button type="button" class="pri" id="goBtn">提取</button>
+      <button type="button" class="pri" id="goBtn">提取无水印</button>
     </div>
-    <div class="hint" id="hint">提示：可直接粘贴整段分享口令，支持视频、多图图集和实况照片。</div>
+    <div class="prog" id="prog"><i></i></div>
+    <div class="hint" id="hint">提示：粘贴整段口令后会自动识别链接，图集默认先秒开轻量预览、保存时下载最高画质无水印原图。</div>
     <div class="err" id="err"></div>
   </div>
 
   <div class="card" id="resCard" style="display:none"></div>
+
+  <div class="card" id="histCard" style="display:none">
+    <div class="hist-hd">
+      <b>最近提取记录</b>
+      <button type="button" class="hist-clr" id="clrHistBtn">清空记录</button>
+    </div>
+    <div class="hist-list" id="histList"></div>
+  </div>
 </div>
 
 <div class="modal" id="cfgModal">
@@ -194,7 +333,7 @@ INDEX_HTML = r"""<!doctype html>
       <h2 style="margin:0">Cookie 与偏好设置</h2>
       <button type="button" id="cfgClose" style="min-height:34px;padding:0 11px;font-size:12.5px">关闭</button>
     </div>
-    <div class="sub" style="margin-bottom:12px">
+    <div class="sub" style="margin-bottom:12px;display:block">
       仅在遇到平台滑块或登录风控时填写。在 X浏览器登录对应网页后，复制请求 Cookie 粘贴到下方保存即可（留空表示不修改当前已存值）。
     </div>
     <div class="field">
@@ -216,15 +355,53 @@ INDEX_HTML = r"""<!doctype html>
   </div>
 </div>
 
-<div class="lightbox" id="lb"><img id="lbImg" alt=""></div>
+<div class="lightbox" id="lb">
+  <div class="lb-top">
+    <span id="lbCount">1 / 1</span>
+    <button type="button" id="lbClose" style="min-height:34px;padding:0 12px;font-size:13px">关闭</button>
+  </div>
+  <div class="lb-stage" id="lbStage">
+    <button type="button" class="lb-nav prev" id="lbPrev">‹</button>
+    <img id="lbImg" alt="">
+    <button type="button" class="lb-nav next" id="lbNext">›</button>
+  </div>
+  <div class="lb-ft">
+    <a class="btn pri" id="lbDl" href="#">保存本张无损原图</a>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
 
 <script>
 const $ = id => document.getElementById(id);
+const HIST_KEY = 'mg_history_v1';
 let busy = false;
 let currentJob = null;
+let lbImages = [];
+let lbIdx = 0;
+let toastTimer = null;
+let timerId = null;
 
 function esc(s) {
   return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function showToast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+function setOnline(ok, txt) {
+  $('statusDot').className = 'dot ' + (ok ? 'on' : 'off');
+  $('statusTxt').textContent = txt || (ok ? '按需服务就绪 · 关页自动停止' : '未连接本地服务');
+}
+
+function showWakeBanner(show) {
+  const box = $('wakeBox');
+  if (box) box.style.display = show ? 'block' : 'none';
 }
 
 function showErr(msg) {
@@ -235,12 +412,126 @@ function showErr(msg) {
   el.classList.add('show');
 }
 
-function showWakeBanner(show) {
-  const box = $('wakeBox');
-  if (box) box.style.display = show ? 'block' : 'none';
+function setHint(msg) { $('hint').textContent = msg || ''; }
+
+function clientExtractUrl(text) {
+  const m = String(text || '').match(/https?:\/\/[A-Za-z0-9\-._~:\/?#[\]@!$&'()*+,;=%]+/g);
+  if (!m) return null;
+  const cleaned = m.map(u => u.replace(/[.,;:!?)"']+$/, '')).filter(Boolean);
+  const prio = ['douyin.com', 'iesdouyin.com', 'xhslink.com', 'xhslink.cn', 'xiaohongshu.com', 'x.com', 'twitter.com'];
+  for (const u of cleaned) {
+    try {
+      const h = new URL(u).hostname.toLowerCase();
+      if (prio.some(d => h === d || h.endsWith('.' + d))) return { url: u, host: h };
+    } catch (e) {}
+  }
+  if (!cleaned.length) return null;
+  try { return { url: cleaned[0], host: new URL(cleaned[0]).hostname.toLowerCase() }; } catch (e) { return { url: cleaned[0], host: '' }; }
 }
 
-function setHint(msg) { $('hint').textContent = msg || ''; }
+function updateDetectBar() {
+  const raw = $('inp').value.trim();
+  const bar = $('detectBar');
+  const txt = $('detectTxt');
+  const trimBtn = $('trimUrlBtn');
+  if (!raw) {
+    bar.className = 'detect';
+    trimBtn.style.display = 'none';
+    return;
+  }
+  const found = clientExtractUrl(raw);
+  if (!found) {
+    bar.className = 'detect warn show';
+    txt.textContent = '未在内容里发现有效 http/https 链接，请确认已复制完整分享内容';
+    trimBtn.style.display = 'none';
+    return;
+  }
+  let plat = '链接';
+  if (found.host.includes('douyin')) plat = '抖音';
+  else if (found.host.includes('xhs') || found.host.includes('xiaohongshu')) plat = '小红书';
+  else if (found.host === 'x.com' || found.host.endsWith('.x.com') || found.host.includes('twitter') || found.host === 't.co') plat = 'X';
+  bar.className = 'detect show';
+  const hasExtra = raw !== found.url;
+  txt.textContent = (hasExtra ? '✓ 已自动忽略文案，识别到【' : '✓ 已识别【') + plat + '】' + found.url;
+  trimBtn.style.display = hasExtra ? 'inline-flex' : 'none';
+  trimBtn.dataset.url = found.url;
+}
+
+$('inp').addEventListener('input', updateDetectBar);
+$('trimUrlBtn').addEventListener('click', () => {
+  const u = $('trimUrlBtn').dataset.url;
+  if (u) { $('inp').value = u; updateDetectBar(); showToast('已精简为纯链接'); }
+});
+
+async function fetchJsonWithRetry(url, options, timeoutMs = 22000, retries = 1) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const r = await fetch(url, Object.assign({}, options || {}, { signal: ctrl.signal }));
+      const data = await r.json();
+      return { res: r, data };
+    } catch (e) {
+      lastErr = e;
+      if (e && e.name === 'AbortError') {
+        throw new Error('请求超时（超过 ' + Math.round(timeoutMs / 1000) + ' 秒），请检查网络或 Cookie');
+      }
+      if (attempt < retries) {
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+    } finally {
+      clearTimeout(tid);
+    }
+  }
+  throw lastErr || new Error('网络请求失败');
+}
+
+function saveHistory(d, inputUrl) {
+  try {
+    const list = JSON.parse(localStorage.getItem(HIST_KEY) || '[]').filter(x => x.url !== inputUrl);
+    const plat = d.platform === 'douyin' ? '抖音' : (d.platform === 'xiaohongshu' ? '小红书' : d.platform);
+    const now = new Date();
+    const hhmm = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    list.unshift({ platform: d.platform, platName: plat, title: d.title || inputUrl, url: inputUrl, time: hhmm });
+    localStorage.setItem(HIST_KEY, JSON.stringify(list.slice(0, 8)));
+    renderHistory();
+  } catch (e) {}
+}
+
+function renderHistory() {
+  try {
+    const list = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
+    const card = $('histCard');
+    const box = $('histList');
+    if (!list.length) { card.style.display = 'none'; box.innerHTML = ''; return; }
+    box.innerHTML = list.map((it, i) => {
+      const cls = it.platform === 'xiaohongshu' ? 'xhs' : (it.platform === 'douyin' ? 'dy' : '');
+      return '<button type="button" class="hist-row" data-idx="' + i + '">' +
+        '<span class="badge ' + cls + '">' + esc(it.platName || it.platform) + '</span>' +
+        '<span class="hist-title">' + esc(it.title) + '</span>' +
+        '<span class="hist-time">' + esc(it.time || '') + '</span>' +
+        '</button>';
+    }).join('');
+    box.querySelectorAll('.hist-row').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const it = list[Number(btn.dataset.idx)];
+        if (!it) return;
+        $('inp').value = it.url;
+        updateDetectBar();
+        runExtract(it.url);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      });
+    });
+    card.style.display = 'block';
+  } catch (e) {}
+}
+renderHistory();
+$('clrHistBtn').addEventListener('click', () => {
+  try { localStorage.removeItem(HIST_KEY); } catch (e) {}
+  renderHistory();
+  showToast('已清空记录');
+});
 
 async function runExtract(text) {
   const val = (text != null ? text : $('inp').value).trim();
@@ -250,15 +541,23 @@ async function runExtract(text) {
   showErr('');
   $('goBtn').disabled = true;
   $('goBtn').textContent = '解析中…';
-  setHint('正在请求目标页面并解析最高画质直链…');
+  $('prog').classList.add('show');
+
+  const t0 = performance.now();
+  const baseHint = '正在请求目标页面并解析最高画质无水印直链… ';
+  setHint(baseHint + '0.0s');
+  clearInterval(timerId);
+  timerId = setInterval(() => {
+    setHint(baseHint + ((performance.now() - t0) / 1000).toFixed(1) + 's');
+  }, 100);
 
   try {
-    const r = await fetch('/api/extract', {
+    const { res: r, data: d } = await fetchJsonWithRetry('/api/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ input: val })
-    });
-    const d = await r.json();
+    }, 22000, 1);
+
     if (!r.ok || !d.ok) {
       showErr(d.error || ('请求失败: ' + r.status));
       setHint('');
@@ -266,25 +565,57 @@ async function runExtract(text) {
     }
     currentJob = d;
     showWakeBanner(false);
+    setOnline(true, '按需服务就绪 · 关页自动停止');
+    const found = clientExtractUrl(val);
+    saveHistory(d, (found && found.url) || val);
     renderResult(d);
-    setHint('解析完成，可直接预览或保存到手机。');
+    const sec = ((performance.now() - t0) / 1000).toFixed(2);
+    setHint('解析完成（耗时 ' + sec + 's），预览已开启加速，保存将直接下载无损原图。');
+    showToast('解析成功 (' + sec + 's)');
   } catch (e) {
-    showWakeBanner(true);
-    showErr('连接本地服务失败: ' + e.message);
+    const msg = e && e.message ? e.message : '连接失败';
+    if (!/超时/.test(msg)) {
+      showWakeBanner(true);
+      setOnline(false, '服务未连接');
+    }
+    showErr('提取失败: ' + msg);
     setHint('');
   } finally {
     busy = false;
+    clearInterval(timerId);
+    $('prog').classList.remove('show');
     $('goBtn').disabled = false;
-    $('goBtn').textContent = '提取';
+    $('goBtn').textContent = '提取无水印';
   }
+}
+
+function showLightbox(idx) {
+  if (!lbImages.length) return;
+  lbIdx = (idx + lbImages.length) % lbImages.length;
+  const im = lbImages[lbIdx];
+  $('lbCount').textContent = (lbIdx + 1) + ' / ' + lbImages.length;
+  $('lbDl').href = im.download_url;
+  const thumb = im.thumb_url || im.preview_url;
+  $('lbImg').src = thumb;
+  if (im.preview_url && im.preview_url !== thumb) {
+    const hi = new Image();
+    const targetIdx = lbIdx;
+    hi.onload = () => { if (lbIdx === targetIdx && $('lb').classList.contains('open')) $('lbImg').src = im.preview_url; };
+    hi.src = im.preview_url;
+  }
+  $('lbPrev').style.display = lbImages.length > 1 ? '' : 'none';
+  $('lbNext').style.display = lbImages.length > 1 ? '' : 'none';
+  $('lb').classList.add('open');
 }
 
 function renderResult(d) {
   const card = $('resCard');
   const plat = d.platform === 'douyin' ? '抖音' : (d.platform === 'xiaohongshu' ? '小红书' : d.platform);
+  const badgeCls = d.platform === 'xiaohongshu' ? 'xhs' : (d.platform === 'douyin' ? 'dy' : '');
   const videos = d.assets.filter(a => a.kind === 'video');
   const images = d.assets.filter(a => a.kind === 'image');
   const lives = d.assets.filter(a => a.kind === 'live_video');
+  lbImages = images;
 
   const counts = [];
   if (videos.length) counts.push(videos.length + ' 个高清视频');
@@ -292,14 +623,14 @@ function renderResult(d) {
   if (lives.length) counts.push(lives.length + ' 个实况视频');
 
   let html = '<div class="meta"><div>' +
-    '<div class="title"><span class="badge">' + esc(plat) + '</span>' + esc(d.title) + '</div>' +
+    '<div class="title"><span class="badge ' + badgeCls + '">' + esc(plat) + '</span>' + esc(d.title) + '</div>' +
     '<div class="author">' + (d.author ? '作者：' + esc(d.author) + ' · ' : '') + esc(counts.join(' · ')) + '</div>' +
     '</div></div>';
 
   if (d.assets.length > 0) {
     html += '<div class="acts">' +
-      '<button type="button" class="pri" id="saveLocalBtn">一键存进相册</button>' +
-      (d.assets.length > 1 ? '<a class="btn" href="' + esc(d.zip_url) + '">打包 (.zip)</a>' : '') +
+      '<button type="button" class="pri" id="saveLocalBtn">📥 一键全部存进相册</button>' +
+      (d.assets.length > 1 ? '<a class="btn" href="' + esc(d.zip_url) + '">📦 打包 (.zip)</a>' : '') +
       '</div>';
   }
 
@@ -314,12 +645,13 @@ function renderResult(d) {
     html += '<div class="grid">';
     images.forEach((im, idx) => {
       const lv = liveMap.get(im.index);
+      const thumbSrc = im.thumb_url || im.preview_url;
       html += '<div class="item">' +
-        '<div class="thumb" data-src="' + esc(im.preview_url) + '">' +
-        '<img loading="lazy" src="' + esc(im.preview_url) + '" alt="">' +
+        '<div class="thumb" data-idx="' + idx + '">' +
+        '<img loading="lazy" src="' + esc(thumbSrc) + '" onload="this.classList.add(\'loaded\')" onerror="this.classList.add(\'loaded\')" alt="">' +
         '<span class="tag">#' + (idx + 1) + '</span></div>' +
         '<div class="item-ft">' +
-        '<a class="btn pri" href="' + esc(im.download_url) + '">保存原图</a>' +
+        '<a class="btn pri" href="' + esc(im.download_url) + '">保存无损原图</a>' +
         (lv ? '<a class="btn" href="' + esc(lv.download_url) + '">实况视频</a>' : '') +
         '</div></div>';
     });
@@ -335,43 +667,53 @@ function renderResult(d) {
   card.style.display = 'block';
 
   card.querySelectorAll('.thumb').forEach(el => {
-    el.addEventListener('click', () => {
-      $('lbImg').src = el.getAttribute('data-src');
-      $('lb').classList.add('open');
-    });
+    el.addEventListener('click', () => showLightbox(Number(el.dataset.idx || 0)));
   });
 
   const saveBtn = $('saveLocalBtn');
   if (saveBtn) {
     saveBtn.addEventListener('click', async () => {
       saveBtn.disabled = true;
-      saveBtn.textContent = '正在保存到相册…';
+      saveBtn.textContent = '正在下载无损原图到相册…';
       try {
-        const r = await fetch('/api/save/' + encodeURIComponent(d.job_id), { method: 'POST' });
-        const res = await r.json();
+        const { res: r, data: res } = await fetchJsonWithRetry('/api/save/' + encodeURIComponent(d.job_id), { method: 'POST' }, 60000, 1);
         if (!r.ok || !res.ok) {
           showErr(res.error || '保存失败');
           saveBtn.disabled = false;
-          saveBtn.textContent = '一键存进相册';
+          saveBtn.textContent = '📥 一键全部存进相册';
           return;
         }
         saveBtn.textContent = '已存进相册 ✓ (' + res.saved + '/' + res.total + ')';
-        setHint('已直接存到 ' + res.dir + ' 并刷新相册。');
+        setHint('已直接保存到 ' + res.dir + ' 并刷新相册。');
+        showToast('已存进相册 (' + res.saved + '/' + res.total + ')');
       } catch (e) {
         showErr('保存请求失败: ' + e.message);
         saveBtn.disabled = false;
-        saveBtn.textContent = '一键存进相册';
+        saveBtn.textContent = '📥 一键全部存进相册';
       }
     });
   }
 }
 
-$('lb').addEventListener('click', () => { $('lb').classList.remove('open'); $('lbImg').src = ''; });
+$('lbClose').addEventListener('click', () => { $('lb').classList.remove('open'); $('lbImg').src = ''; });
+$('lbPrev').addEventListener('click', e => { e.stopPropagation(); showLightbox(lbIdx - 1); });
+$('lbNext').addEventListener('click', e => { e.stopPropagation(); showLightbox(lbIdx + 1); });
+$('lb').addEventListener('click', e => { if (e.target === $('lb') || e.target === $('lbStage')) { $('lb').classList.remove('open'); $('lbImg').src = ''; } });
+let touchX = null;
+$('lbStage').addEventListener('touchstart', e => { touchX = e.touches && e.touches[0] ? e.touches[0].clientX : null; }, { passive: true });
+$('lbStage').addEventListener('touchend', e => {
+  if (touchX == null || !e.changedTouches || !e.changedTouches[0]) return;
+  const dx = e.changedTouches[0].clientX - touchX;
+  touchX = null;
+  if (Math.abs(dx) > 45) showLightbox(dx > 0 ? lbIdx - 1 : lbIdx + 1);
+}, { passive: true });
+
 $('goBtn').addEventListener('click', () => runExtract());
-$('clrBtn').addEventListener('click', () => { $('inp').value = ''; showErr(''); $('inp').focus(); });
+$('clrBtn').addEventListener('click', () => { $('inp').value = ''; updateDetectBar(); showErr(''); $('inp').focus(); });
 
 $('inp').addEventListener('paste', () => {
   setTimeout(() => {
+    updateDetectBar();
     if (/https?:\/\//i.test($('inp').value)) runExtract();
   }, 60);
 });
@@ -382,23 +724,25 @@ $('pasteBtn').addEventListener('click', async () => {
       const txt = await navigator.clipboard.readText();
       if (txt && txt.trim()) {
         $('inp').value = txt.trim();
+        updateDetectBar();
         runExtract(txt.trim());
         return;
       }
       setHint('剪贴板是空的，请先在抖音/小红书复制链接。');
+      showToast('剪贴板是空的');
       return;
     }
   } catch (e) {}
   $('inp').value = '';
+  updateDetectBar();
   $('inp').focus();
-  setHint('当前非 HTTPS 地址，浏览器不允许网页自动读剪贴板：请长按输入框点「粘贴」，粘贴后会自动开始提取。');
+  setHint('当前浏览器限制网页自动读剪贴板：请长按输入框点「粘贴」，粘贴后会自动开始提取。');
 });
 
 async function refreshCfgStatus() {
   try {
-    const r = await fetch('/api/config');
+    const { res: r, data: c } = await fetchJsonWithRetry('/api/config', {}, 8000, 1);
     if (!r.ok) return;
-    const c = await r.json();
     $('xhsSt').textContent = c.xhs_cookie_set ? '已配置' : '未配置';
     $('xhsSt').className = c.xhs_cookie_set ? '' : 'off';
     $('dySt').textContent = c.douyin_cookie_set ? '已配置' : '未配置';
@@ -406,8 +750,10 @@ async function refreshCfgStatus() {
     $('liveChk').checked = !!c.save_live_photo_video;
     $('stopBtn').style.display = c.can_shutdown ? '' : 'none';
     showWakeBanner(false);
+    setOnline(true, '按需服务就绪 · 关页自动停止');
   } catch (e) {
     showWakeBanner(true);
+    setOnline(false, '网关未连接');
   }
 }
 
@@ -419,7 +765,7 @@ if ('serviceWorker' in navigator) {
 
 function sendHeartbeat() {
   fetch('/api/heartbeat', { method: 'POST', keepalive: true })
-    .then(r => { if (r.ok) showWakeBanner(false); })
+    .then(r => { if (r.ok) { showWakeBanner(false); setOnline(true, '按需服务就绪 · 关页自动停止'); } })
     .catch(() => {});
 }
 
@@ -449,8 +795,10 @@ if ($('retryConnBtn')) {
 
 $('stopBtn').addEventListener('click', async () => {
   try { await fetch('/api/shutdown', { method: 'POST' }); } catch (e) {}
+  setOnline(false, '服务已休眠 · 刷新即醒');
   setHint('本次解析服务已关闭；下次打开或刷新网页会自动唤醒。');
   $('stopBtn').style.display = 'none';
+  showToast('已关闭解析服务');
 });
 
 function openCfg() {
@@ -466,20 +814,22 @@ $('saveCfgBtn').addEventListener('click', async () => {
   const payload = { save_live_photo_video: $('liveChk').checked };
   if ($('xhsCk').value.trim()) payload.xhs_cookie = $('xhsCk').value.trim();
   if ($('dyCk').value.trim()) payload.douyin_cookie = $('dyCk').value.trim();
-  await fetch('/api/config', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  await fetchJsonWithRetry('/api/config', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) }, 8000, 1);
   $('xhsCk').value = '';
   $('dyCk').value = '';
   await refreshCfgStatus();
   $('cfgModal').classList.remove('open');
   setHint('设置已保存。');
+  showToast('设置已保存');
 });
 
 $('clrCkBtn').addEventListener('click', async () => {
-  await fetch('/api/config', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ xhs_cookie: '', douyin_cookie: '' }) });
+  await fetchJsonWithRetry('/api/config', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ xhs_cookie: '', douyin_cookie: '' }) }, 8000, 1);
   $('xhsCk').value = '';
   $('dyCk').value = '';
   await refreshCfgStatus();
   setHint('已清空保存的 Cookie。');
+  showToast('已清空 Cookie');
 });
 </script>
 </body>
@@ -565,6 +915,11 @@ class JobStore:
         if not cached:
             return list(sa.asset.urls)
         return [cached] + [u for u in sa.asset.urls if u != cached]
+
+    def thumb_urls_for(self, sa: StoredAsset) -> List[str]:
+        if sa.asset.thumb_urls:
+            return dedupe_keep_order(list(sa.asset.thumb_urls) + list(sa.asset.urls))
+        return self.candidate_urls_for(sa)
 
     def remember_winning(self, sa: StoredAsset, url: str, ext: str) -> None:
         with self._lock:
@@ -765,7 +1120,8 @@ def make_handler(state: WebAppState):
                 asset_id = path[len("/api/media/") :]
                 qs = parse_qs(parsed.query)
                 as_dl = qs.get("dl", [""])[0] == "1"
-                self._handle_media(asset_id, as_dl)
+                as_thumb = qs.get("thumb", [""])[0] == "1"
+                self._handle_media(asset_id, as_dl, as_thumb=as_thumb)
                 return
             if path.startswith("/api/zip/"):
                 job_id = path[len("/api/zip/") :]
@@ -796,7 +1152,7 @@ def make_handler(state: WebAppState):
             if path == "/api/leave":
                 self._drain_body()
                 mode = parse_qs(parsed.query).get("mode", ["hidden"])[0]
-                delay = 6.0 if mode == "close" else 30.0
+                delay = 8.0 if mode == "close" else 60.0
                 state.mark_leave(delay)
                 self._send_json(HTTPStatus.OK, {"ok": True, "mode": mode})
                 return
@@ -841,6 +1197,11 @@ def make_handler(state: WebAppState):
                                 "index": sa.index,
                                 "pair_index": sa.pair_index,
                                 "kind": sa.asset.kind,
+                                "thumb_url": (
+                                    f"/api/media/{sa.asset_id}?thumb=1"
+                                    if sa.asset.kind == "image"
+                                    else f"/api/media/{sa.asset_id}"
+                                ),
                                 "preview_url": f"/api/media/{sa.asset_id}",
                                 "download_url": f"/api/media/{sa.asset_id}?dl=1",
                             }
@@ -894,7 +1255,7 @@ def make_handler(state: WebAppState):
 
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
 
-        def _handle_media(self, asset_id: str, as_download: bool) -> None:
+        def _handle_media(self, asset_id: str, as_download: bool, as_thumb: bool = False) -> None:
             sa = state.store.get_asset(asset_id)
             if not sa:
                 self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "资源不存在或已过期，请重新提取"})
@@ -903,10 +1264,15 @@ def make_handler(state: WebAppState):
             _, client = state.client()
             expected = "video" if sa.asset.kind in ("video", "live_video") else "image"
             range_hdr = self.headers.get("Range")
+            urls = (
+                state.store.thumb_urls_for(sa)
+                if (as_thumb and sa.asset.thumb_urls)
+                else state.store.candidate_urls_for(sa)
+            )
             with state.busy():
                 try:
                     stream = client.open_media_candidates(
-                        state.store.candidate_urls_for(sa),
+                        urls,
                         default_ext=sa.asset.default_ext,
                         expected_prefix=expected,
                         headers=sa.asset.headers,
@@ -917,7 +1283,8 @@ def make_handler(state: WebAppState):
                     self._send_json(HTTPStatus.BAD_GATEWAY, {"ok": False, "error": f"拉取媒体失败: {e}"})
                     return
 
-                state.store.remember_winning(sa, stream.winning_url, stream.ext)
+                if not as_thumb:
+                    state.store.remember_winning(sa, stream.winning_url, stream.ext)
                 try:
                     self.send_response(stream.status)
                     self.send_header("Content-Type", stream.content_type)

@@ -85,19 +85,27 @@ class WebServerTests(unittest.TestCase):
             title="山海日落",
             author="摄影师",
             assets=[
-                MediaAsset(kind="image", urls=["https://bad.example/1", "https://good.example/1.png"], default_ext=".jpg"),
+                MediaAsset(
+                    kind="image",
+                    urls=["https://bad.example/1", "https://good.example/1.png"],
+                    default_ext=".jpg",
+                    thumb_urls=["https://thumb.example/1.webp"],
+                ),
                 MediaAsset(kind="image", urls=["https://good.example/2.jpg"], default_ext=".jpg"),
             ],
         )
 
         png_bytes = b"\x89PNG\r\n\x1a\n" + b"P" * 1500
         jpg_bytes = b"\xff\xd8\xff\xe0" + b"J" * 1500
+        webp_bytes = b"RIFF1234WEBP" + b"W" * 1500
 
         class FakeOpener:
             def open(self, req, timeout=10):
                 u = req.full_url
                 if "bad.example" in u:
                     return _FakeRawResp("text/html", b"<html>403</html>")
+                if "thumb.example" in u:
+                    return _FakeRawResp("image/webp", webp_bytes)
                 if "1.png" in u:
                     return _FakeRawResp("image/png", png_bytes)
                 return _FakeRawResp("image/jpeg", jpg_bytes)
@@ -108,8 +116,13 @@ class WebServerTests(unittest.TestCase):
         data = json.loads(raw.decode("utf-8"))
         self.assertTrue(data["ok"])
         self.assertEqual(len(data["assets"]), 2)
+        self.assertTrue(data["assets"][0]["thumb_url"].endswith("?thumb=1"))
 
         with patch("urllib.request.build_opener", return_value=FakeOpener()):
+            tst, _, tbody = self._req(data["assets"][0]["thumb_url"])
+            self.assertEqual(tst, 200)
+            self.assertEqual(tbody, webp_bytes)
+
             mst, mhdrs, mbody = self._req(data["assets"][0]["download_url"])
             self.assertEqual(mst, 200)
             self.assertEqual(mbody, png_bytes)
