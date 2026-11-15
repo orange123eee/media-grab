@@ -75,6 +75,14 @@ def _find_aweme_item(data: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+_GEAR_RES_RE = re.compile(r"(4k|2k|1080|720|540|480|360)", re.IGNORECASE)
+_VIDEO_ID_QS_RE = re.compile(r"[?&]video_id=([^&\s]+)")
+_IMG_RESIZE_TOKEN_RE = re.compile(
+    r"(?:~tplv-[^.?]*?:(?:w:)?(\d{3,5})(?::(\d{1,5}))?|[?&](?:w|width)=(\d{3,5})\b)",
+    re.IGNORECASE,
+)
+
+
 def _clean_video_url(url: str) -> str:
     u = normalize_http_url(url)
     u = re.sub(r"([/?&=])playwm([/?&=]|$)", r"\1play\2", u)
@@ -82,47 +90,125 @@ def _clean_video_url(url: str) -> str:
     return u
 
 
+def _gear_resolution_score(gear_name: str, urls: Optional[List[str]] = None) -> int:
+    text = f"{gear_name or ''} {' '.join(urls or ())}"
+    m = _GEAR_RES_RE.search(text)
+    if not m:
+        return 0
+    tok = m.group(1).lower()
+    if tok == "4k":
+        return 2160
+    if tok == "2k":
+        return 1440
+    return int(tok)
+
+
 def _collect_video_urls(video_obj: Dict[str, Any]) -> List[str]:
-    """Order video stream URLs from highest resolution/bitrate to fallback endpoints."""
+    """Order video stream URLs from highest resolution/bitrate (original master first) down."""
     candidates: List[str] = []
 
     bit_rates = video_obj.get("bit_rate")
+    bit_rate_urls: List[str] = []
     if isinstance(bit_rates, list) and bit_rates:
         def _score(entry: Dict[str, Any]) -> tuple:
             pa = entry.get("play_addr") or {}
             pixels = int(pa.get("width") or 0) * int(pa.get("height") or 0)
+            urls = pa.get("url_list") or []
+            gear_hint = _gear_resolution_score(str(entry.get("gear_name") or ""), urls)
             br = int(entry.get("bit_rate") or 0)
-            return (pixels, br)
+            size = int(pa.get("data_size") or 0)
+            return (pixels, gear_hint, br, size)
 
         for entry in sorted((e for e in bit_rates if isinstance(e, dict)), key=_score, reverse=True):
             pa = entry.get("play_addr") or {}
             for u in pa.get("url_list") or []:
-                candidates.append(_clean_video_url(u))
+                bit_rate_urls.append(_clean_video_url(u))
 
-    play_addr = video_obj.get("play_addr") or {}
-    for u in play_addr.get("url_list") or []:
-        candidates.append(_clean_video_url(u))
+    addr_candidates: List[tuple] = []
+    fallback_uri = ""
+    for key in ("play_addr_265", "play_addr_h264", "play_addr"):
+        addr = video_obj.get(key)
+        if not isinstance(addr, dict):
+            continue
+        if not fallback_uri and addr.get("uri"):
+            fallback_uri = str(addr["uri"]).strip()
+        urls = [_clean_video_url(u) for u in (addr.get("url_list") or []) if u]
+        if not urls:
+            continue
+        pixels = int(addr.get("width") or 0) * int(addr.get("height") or 0)
+        size = int(addr.get("data_size") or 0)
+        addr_candidates.append(((pixels, size), urls))
 
-    uri = play_addr.get("uri")
-    if uri:
+    if not fallback_uri and not bit_rate_urls:
+        for _, urls in addr_candidates:
+            for u in urls:
+                m = _VIDEO_ID_QS_RE.search(u)
+                if m:
+                    fallback_uri = m.group(1)
+                    break
+            if fallback_uri:
+                break
+
+    if fallback_uri:
+        # Douyin's ratio=default&improve_bitrate=1 serves un-capped original master (often 1080p/2K/HEVC)
+        # even when feed bit_rate / SSR play_addr omits 1080p or hard-caps to 720p/540p.
         candidates.append(
-            f"https://aweme.snssdk.com/aweme/v1/play/?video_id={uri}"
+            f"https://aweme.snssdk.com/aweme/v1/play/?video_id={fallback_uri}"
             "&ratio=default&improve_bitrate=1&watermark=0&line=0"
         )
+        max_dim = max(int(video_obj.get("width") or 0), int(video_obj.get("height") or 0))
+        if max_dim > 1920:
+            candidates.append(
+                f"https://aweme.snssdk.com/aweme/v1/play/?video_id={fallback_uri}"
+                "&ratio=4k&improve_bitrate=1&watermark=0&line=0"
+            )
+        candidates.append(
+            f"https://aweme.snssdk.com/aweme/v1/play/?video_id={fallback_uri}"
+            "&ratio=1080p&improve_bitrate=1&watermark=0&line=0"
+        )
+
+    candidates.extend(bit_rate_urls)
+    addr_candidates.sort(key=lambda item: item[0], reverse=True)
+    for _, urls in addr_candidates:
+        candidates.extend(urls)
 
     return dedupe_keep_order(candidates)
 
 
 def _rank_image_urls(urls: List[str], prefer_webp: bool = False) -> List[str]:
-    """Order watermark-free URLs preferring JPG/PNG for downloads or WebP for lightweight previews."""
+    """Order watermark-free URLs preferring original/highest-res JPG/PNG or WebP for previews."""
     cleaned = [normalize_http_url(u) for u in urls if u]
 
     def _priority(u: str) -> tuple:
         low = u.lower()
-        has_wm = 1 if ("watermark" in low or "_wm" in low) else 0
+        has_wm = 1 if (
+            "watermark" in low
+            or "_wm" in low
+            or "tplv-dy-water" in low
+            or "water-mark" in low
+        ) else 0
         is_webp = 1 if ".webp" in low else 0
         fmt_rank = (0 if is_webp else 1) if prefer_webp else is_webp
-        return (has_wm, fmt_rank)
+
+        if prefer_webp:
+            return (has_wm, fmt_rank, 0, 0)
+
+        is_noop = "~noop" in low or "tplv-dy-noop" in low or "/origin/" in low
+        if is_noop:
+            return (has_wm, 0, 0, fmt_rank)
+
+        m = _IMG_RESIZE_TOKEN_RE.search(low)
+        width = int(m.group(1) or m.group(3) or 0) if m else 0
+        height = int(m.group(2) or 0) if m and m.group(2) else 0
+        dim = max(width, height)
+        is_small_tag = "shrink" in low or "thumb" in low
+        if is_small_tag and dim < 1080:
+            tier = 3
+        elif dim >= 1080 or dim == 0:
+            tier = 1
+        else:
+            tier = 2
+        return (has_wm, tier, -dim, fmt_rank)
 
     return dedupe_keep_order(sorted(cleaned, key=_priority))
 
@@ -143,7 +229,8 @@ def parse_douyin_payload(data: Dict[str, Any], fallback_id: str, config: Config)
         for img in images:
             if not isinstance(img, dict):
                 continue
-            raw_urls = list(img.get("url_list") or []) + list(img.get("download_url_list") or [])
+            origin_urls = list((img.get("origin_url") or {}).get("url_list") or []) if isinstance(img.get("origin_url"), dict) else []
+            raw_urls = list(img.get("download_url_list") or []) + origin_urls + list(img.get("url_list") or [])
             ranked = _rank_image_urls(raw_urls, prefer_webp=False)
             if ranked:
                 assets.append(

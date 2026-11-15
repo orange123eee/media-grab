@@ -45,8 +45,41 @@ def _find_note_obj(state: Dict[str, Any], preferred_id: str) -> Optional[Dict[st
     return None
 
 
+_XHS_RES_HINT_RE = re.compile(r"(4k|2k|2160|1440|1080|720|540|480|uhd|fhd)", re.IGNORECASE)
+
+
+def _infer_stream_pixels(st: Dict[str, Any], urls: List[str]) -> int:
+    pixels = int(st.get("width") or 0) * int(st.get("height") or 0)
+    if pixels > 0:
+        return pixels
+    hint_text = " ".join(
+        [
+            str(st.get("streamDesc") or ""),
+            str(st.get("qualityType") or ""),
+            urls[0] if urls else "",
+        ]
+    )
+    m = _XHS_RES_HINT_RE.search(hint_text)
+    if not m:
+        return 0
+    tok = m.group(1).lower()
+    mapping = {
+        "4k": 3840 * 2160,
+        "uhd": 3840 * 2160,
+        "2160": 3840 * 2160,
+        "2k": 2560 * 1440,
+        "1440": 2560 * 1440,
+        "1080": 1920 * 1080,
+        "fhd": 1920 * 1080,
+        "720": 1280 * 720,
+        "540": 960 * 540,
+        "480": 854 * 480,
+    }
+    return mapping.get(tok, 0)
+
+
 def _collect_stream_urls(stream_dict: Dict[str, Any]) -> List[str]:
-    """Rank H.264/H.265/AV1 streams by resolution and bitrate descending."""
+    """Rank H.264/H.265/AV1 streams by resolution, bitrate, and size descending."""
     ranked: List[tuple] = []
     codec_pref = {"h264": 2, "h265": 2, "av1": 1}
 
@@ -57,16 +90,18 @@ def _collect_stream_urls(stream_dict: Dict[str, Any]) -> List[str]:
         for st in entries:
             if not isinstance(st, dict):
                 continue
-            pixels = int(st.get("width") or 0) * int(st.get("height") or 0)
-            bitrate = int(st.get("videoBitrate") or st.get("avgBitrate") or 0)
             urls = []
             if st.get("masterUrl"):
                 urls.append(normalize_http_url(st["masterUrl"]))
             for bu in st.get("backupUrls") or []:
                 urls.append(normalize_http_url(bu))
             urls = [u for u in urls if u]
-            if urls:
-                ranked.append(((pixels, bitrate, pref), urls))
+            if not urls:
+                continue
+            pixels = _infer_stream_pixels(st, urls)
+            bitrate = int(st.get("videoBitrate") or st.get("avgBitrate") or 0)
+            size = int(st.get("size") or 0)
+            ranked.append(((pixels, bitrate, size, pref), urls))
 
     ranked.sort(key=lambda item: item[0], reverse=True)
     merged: List[str] = []
@@ -92,16 +127,37 @@ def _collect_raw_image_urls(img: Dict[str, Any], prefer_preview: bool = False) -
     raw_urls: List[str] = []
     info_list = img.get("infoList")
     scenes = ("WB_PRV", "WB_DFT") if prefer_preview else ("WB_DFT", "WB_PRV")
+
+    def _entry_score(entry: Dict[str, Any]) -> tuple:
+        px = int(entry.get("width") or 0) * int(entry.get("height") or 0)
+        sz = int(entry.get("fileSize") or entry.get("size") or 0)
+        return (px, sz)
+
     if isinstance(info_list, list):
-        for scene in scenes:
-            for entry in info_list:
-                if isinstance(entry, dict) and entry.get("imageScene") == scene and entry.get("url"):
+        valid_entries = [e for e in info_list if isinstance(e, dict) and e.get("url")]
+        if not prefer_preview:
+            for scene in scenes:
+                matched = [e for e in valid_entries if e.get("imageScene") == scene]
+                matched.sort(key=_entry_score, reverse=True)
+                for entry in matched:
                     raw_urls.append(normalize_http_url(entry["url"]))
-        for entry in info_list:
-            if isinstance(entry, dict) and entry.get("url"):
+            rest = [e for e in valid_entries if e.get("imageScene") not in scenes]
+            rest.sort(key=_entry_score, reverse=True)
+            for entry in rest:
+                raw_urls.append(normalize_http_url(entry["url"]))
+        else:
+            for scene in scenes:
+                for entry in valid_entries:
+                    if entry.get("imageScene") == scene:
+                        raw_urls.append(normalize_http_url(entry["url"]))
+            for entry in valid_entries:
                 raw_urls.append(normalize_http_url(entry["url"]))
 
-    keys = ("urlPre", "urlDefault", "url") if prefer_preview else ("urlDefault", "urlPre", "url")
+    keys = (
+        ("urlPre", "urlDefault", "url")
+        if prefer_preview
+        else ("originUrl", "urlOrigin", "originalUrl", "urlDefault", "urlPre", "url")
+    )
     for key in keys:
         if img.get(key):
             raw_urls.append(normalize_http_url(img[key]))
@@ -180,7 +236,13 @@ def parse_xhs_state(state: Dict[str, Any], preferred_id: str, config: Config) ->
         v_urls = _collect_stream_urls(stream) if isinstance(stream, dict) else []
         origin_key = (video_obj.get("consumer") or {}).get("originVideoKey")
         if origin_key:
-            v_urls = dedupe_keep_order(v_urls + [f"https://sns-video-bd.xhscdn.com/{origin_key}"])
+            v_urls = dedupe_keep_order(
+                v_urls
+                + [
+                    f"https://sns-video-hw.xhscdn.com/{origin_key}",
+                    f"https://sns-video-bd.xhscdn.com/{origin_key}",
+                ]
+            )
         if v_urls:
             cover_thumbs: List[str] = []
             if isinstance(image_list, list) and image_list and isinstance(image_list[0], dict):

@@ -3,6 +3,7 @@
 import io
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -127,8 +128,15 @@ class DouyinExtractorTests(unittest.TestCase):
         self.assertEqual(res.item_id, "7300112233")
         self.assertEqual(len(res.assets), 1)
         urls = res.assets[0].urls
-        self.assertEqual(urls[0], "https://v3.douyinvod.com/play/high1080.mp4?watermark=0")
-        self.assertIn("https://aweme.snssdk.com/aweme/v1/play/?video_id=v0200fg10000&ratio=720p", urls)
+        self.assertEqual(
+            urls[0],
+            "https://aweme.snssdk.com/aweme/v1/play/?video_id=v0200fg10000&ratio=default&improve_bitrate=1&watermark=0&line=0",
+        )
+        hi_idx = urls.index("https://v3.douyinvod.com/play/high1080.mp4?watermark=0")
+        lo_idx = urls.index("https://v3.douyinvod.com/low.mp4")
+        cap_idx = urls.index("https://aweme.snssdk.com/aweme/v1/play/?video_id=v0200fg10000&ratio=720p")
+        self.assertLess(hi_idx, lo_idx)
+        self.assertLess(lo_idx, cap_idx)
         self.assertTrue(any("improve_bitrate=1" in u for u in urls))
 
     def test_parse_render_data_images_and_live_photo(self):
@@ -159,7 +167,65 @@ class DouyinExtractorTests(unittest.TestCase):
         self.assertEqual([a.kind for a in res.assets], ["image", "live_video"])
         self.assertEqual(res.assets[0].urls[0], "https://p9.douyinpic.com/img/a.jpeg")
         self.assertEqual(res.assets[0].thumb_urls[0], "https://p3.douyinpic.com/img/a.webp")
-        self.assertEqual(res.assets[1].urls[0], "https://aweme.snssdk.com/aweme/v1/play/?video_id=live1")
+        self.assertEqual(
+            res.assets[1].urls[0],
+            "https://aweme.snssdk.com/aweme/v1/play/?video_id=live1&ratio=default&improve_bitrate=1&watermark=0&line=0",
+        )
+        self.assertIn("https://aweme.snssdk.com/aweme/v1/play/?video_id=live1", res.assets[1].urls)
+
+    def test_douyin_auto_prefers_4k_and_highest_res_images(self):
+        payload = {
+            "loaderData": {
+                "video_(id)/page": {
+                    "videoInfoRes": {
+                        "item_list": [
+                            {
+                                "aweme_id": "7400112233",
+                                "desc": "画质自动最高",
+                                "images": [
+                                    {
+                                        "url_list": [
+                                            "https://p3.douyinpic.com/pic~tplv-dy-resize-w:720.jpeg",
+                                            "https://p9.douyinpic.com/pic~tplv-dy-resize-orig-s:1440:0.jpeg",
+                                            "https://p6.douyinpic.com/pic~tplv-dy-water-v2:2160:0.jpeg",
+                                        ],
+                                        "download_url_list": [
+                                            "https://p26.douyinpic.com/pic~noop.jpeg",
+                                        ],
+                                    },
+                                    {
+                                        "url_list": [
+                                            "https://p3.douyinpic.com/p2~tplv-dy-shrink:640:800.jpeg",
+                                            "https://p9.douyinpic.com/p2~tplv-dy-resize-w:1440.webp",
+                                            "https://p9.douyinpic.com/p2~tplv-dy-resize-w:1080.jpeg",
+                                        ],
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        res_imgs = parse_douyin_payload(payload, "", Config())
+        self.assertEqual(res_imgs.assets[0].urls[0], "https://p26.douyinpic.com/pic~noop.jpeg")
+        self.assertGreater(
+            res_imgs.assets[0].urls.index("https://p6.douyinpic.com/pic~tplv-dy-water-v2:2160:0.jpeg"),
+            res_imgs.assets[0].urls.index("https://p3.douyinpic.com/pic~tplv-dy-resize-w:720.jpeg"),
+        )
+        self.assertEqual(res_imgs.assets[1].urls[0], "https://p9.douyinpic.com/p2~tplv-dy-resize-w:1440.webp")
+
+        vid_payload = {
+            "aweme_id": "7400112244",
+            "video": {
+                "width": 2160,
+                "height": 3840,
+                "play_addr": {"uri": "vid4k"},
+            },
+        }
+        res_vid = parse_douyin_payload(vid_payload, "", Config())
+        self.assertIn("ratio=default", res_vid.assets[0].urls[0])
+        self.assertIn("ratio=4k", res_vid.assets[0].urls[1])
 
     def test_detect_platform_and_extract_url_for_x(self):
         for sample in (
@@ -330,6 +396,69 @@ class XiaohongshuExtractorTests(unittest.TestCase):
         with self.assertRaises(ExtractionError) as ctx:
             extract_xiaohongshu("http://xhslink.com/a/123", FakeClient(), Config())
         self.assertIn("xhs_cookie", str(ctx.exception))
+
+    def test_parse_xhs_infers_4k_when_dimensions_missing_and_picks_largest_spectrum_info(self):
+        vid_state = {
+            "note": {
+                "noteDetailMap": {
+                    "xhs4k": {
+                        "note": {
+                            "noteId": "xhs4k",
+                            "type": "video",
+                            "title": "4K推理测试",
+                            "video": {
+                                "media": {
+                                    "stream": {
+                                        "h264": [
+                                            {"masterUrl": "https://v.xhscdn.com/1080.mp4", "width": 1080, "height": 1920, "videoBitrate": 3200},
+                                        ],
+                                        "h265": [
+                                            {"masterUrl": "https://v.xhscdn.com/uhd.mp4", "qualityType": "4K", "videoBitrate": 2900},
+                                        ],
+                                    }
+                                }
+                            },
+                        }
+                    }
+                }
+            }
+        }
+        v_res = parse_xhs_state(vid_state, "xhs4k", Config())
+        self.assertEqual(v_res.assets[0].urls[0], "https://v.xhscdn.com/uhd.mp4")
+
+        img_state = {
+            "note": {
+                "noteDetailMap": {
+                    "xhsspec": {
+                        "note": {
+                            "noteId": "xhsspec",
+                            "type": "normal",
+                            "title": "spectrum高分辨率",
+                            "imageList": [
+                                {
+                                    "infoList": [
+                                        {
+                                            "imageScene": "WB_DFT",
+                                            "width": 720,
+                                            "height": 960,
+                                            "url": "https://sns-webpic-qc.xhscdn.com/spectrum/low!nd_dft_wgth_jpg_3",
+                                        },
+                                        {
+                                            "imageScene": "WB_DFT",
+                                            "width": 2160,
+                                            "height": 2880,
+                                            "url": "https://sns-webpic-qc.xhscdn.com/spectrum/hi!nd_dft_wgth_jpg_3",
+                                        },
+                                    ]
+                                }
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+        i_res = parse_xhs_state(img_state, "xhsspec", Config())
+        self.assertEqual(i_res.assets[0].urls[0], "https://sns-webpic-qc.xhscdn.com/spectrum/hi!nd_dft_wgth_jpg_3")
 
 
 class XExtractorTests(unittest.TestCase):
@@ -529,6 +658,96 @@ class XExtractorTests(unittest.TestCase):
             extract_x("https://x.com/u/status/1", tc, Config(timeout=10))
         self.assertIn("未检测到可提取", str(ctx.exception))
         self.assertFalse(any("fixupx.com" in u for u in tc.calls))
+
+    def test_x_prefers_higher_resolution_over_bitrate_webp_upgrade_and_multi_variant_race(self):
+        fx_payload = {
+            "code": 200,
+            "tweet": {
+                "id": "888777666",
+                "text": "4K vs bitrate race",
+                "author": {"name": "HD"},
+                "media": {
+                    "all": [
+                        {"type": "photo", "url": "https://pbs.twimg.com/media/WebpPic?format=webp&name=large"},
+                        {
+                            "type": "video",
+                            "variants": [
+                                {
+                                    "bitrate": 2176000,
+                                    "content_type": "video/mp4",
+                                    "url": "https://video.twimg.com/ext_tw_video/2/vid/avc1/1280x720/hi720.mp4",
+                                },
+                                {
+                                    "bitrate": 1800000,
+                                    "content_type": "video/mp4",
+                                    "url": "https://video.twimg.com/ext_tw_video/2/vid/hev1/1920x1080/hi1080.mp4",
+                                },
+                            ],
+                        },
+                    ]
+                },
+            },
+        }
+        parsed_fx = parse_fxtwitter_tweet(fx_payload)
+        self.assertIsNotNone(parsed_fx)
+        self.assertEqual(parsed_fx.assets[0].urls[0], "https://pbs.twimg.com/media/WebpPic?format=jpg&name=orig")
+        self.assertEqual(
+            parsed_fx.assets[1].urls[0],
+            "https://video.twimg.com/ext_tw_video/2/vid/hev1/1920x1080/hi1080.mp4",
+        )
+
+        # Even if fast vxtwitter wins first with a single 720p URL, slightly slower fxtwitter upgrades to 1080p.
+        vx_720 = {
+            "tweetID": "888777667",
+            "text": "race upgrade",
+            "user_name": "U",
+            "media_extended": [
+                {"type": "video", "url": "https://video.twimg.com/ext_tw_video/3/vid/avc1/1280x720/v720.mp4"}
+            ],
+        }
+        fx_1080 = {
+            "code": 200,
+            "tweet": {
+                "id": "888777667",
+                "text": "race upgrade",
+                "author": {"name": "U"},
+                "media": {
+                    "videos": [
+                        {
+                            "type": "video",
+                            "variants": [
+                                {
+                                    "bitrate": 2176000,
+                                    "content_type": "video/mp4",
+                                    "url": "https://video.twimg.com/ext_tw_video/3/vid/avc1/1280x720/v720.mp4",
+                                },
+                                {
+                                    "bitrate": 9000000,
+                                    "content_type": "video/mp4",
+                                    "url": "https://video.twimg.com/ext_tw_video/3/vid/avc1/1920x1080/v1080.mp4",
+                                },
+                            ],
+                        }
+                    ]
+                },
+            },
+        }
+
+        class RaceClient:
+            def get(self, url, **kwargs):
+                if "api.vxtwitter.com" in url:
+                    return HttpResponse(200, url, {}, json.dumps(vx_720).encode("utf-8"))
+                if "api.fxtwitter.com" in url:
+                    time.sleep(0.03)
+                    return HttpResponse(200, url, {}, json.dumps(fx_1080).encode("utf-8"))
+                raise HttpError("syndication slow")
+
+        upgraded = extract_x("https://x.com/u/status/888777667", RaceClient(), Config(timeout=10))
+        self.assertEqual(
+            upgraded.assets[0].urls[0],
+            "https://video.twimg.com/ext_tw_video/3/vid/avc1/1920x1080/v1080.mp4",
+        )
+        self.assertEqual(len(upgraded.assets[0].urls), 2)
 
 
 class ConfigAndDownloadTests(unittest.TestCase):

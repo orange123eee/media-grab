@@ -445,6 +445,30 @@ class WebServerTests(unittest.TestCase):
             with zipfile.ZipFile(io.BytesIO(zall_raw)) as zf:
                 self.assertEqual(len(zf.namelist()), 3)
 
+    def test_video_fallback_host_never_downgrades_next_job(self):
+        job1 = self.state.store.put_result(
+            ExtractResult(
+                platform="douyin",
+                item_id="v1",
+                title="视频1",
+                author="a",
+                assets=[MediaAsset(kind="video", urls=["https://hi.example/1080.mp4", "https://lo.example/720.mp4"], default_ext=".mp4")],
+            )
+        )
+        self.state.store.remember_winning(job1.assets[0], "https://lo.example/720.mp4", ".mp4", is_thumb=False)
+
+        job2 = self.state.store.put_result(
+            ExtractResult(
+                platform="douyin",
+                item_id="v2",
+                title="视频2",
+                author="a",
+                assets=[MediaAsset(kind="video", urls=["https://hi.example/4k.mp4", "https://lo.example/540.mp4"], default_ext=".mp4")],
+            )
+        )
+        cands = self.state.store.candidate_urls_for(job2.assets[0])
+        self.assertEqual(cands[0], "https://hi.example/4k.mp4")
+
 
 class OnDemandGateTests(unittest.TestCase):
     def test_gate_spawns_on_demand_and_proxies(self):

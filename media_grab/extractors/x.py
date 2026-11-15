@@ -17,7 +17,7 @@ from ..utils import dedupe_keep_order, normalize_http_url
 from . import ExtractResult, ExtractionError, MediaAsset
 
 _STATUS_RE = re.compile(r"/(?:([A-Za-z0-9_]{1,30})/)?status(?:es)?/(\d+)")
-_RES_HINT_RE = re.compile(r"/(\d{2,5})x(\d{2,5})/")
+_RES_HINT_RE = re.compile(r"(?:/|_)(\d{2,5})x(\d{2,5})(?:/|_|\.)")
 _META_OR_JS_REDIRECT_RE = re.compile(
     r'(?:url\s*=|location\.replace\s*\(\s*["\']|location\.href\s*=\s*["\'])(https?://[^\s"\'<>)]+)',
     re.IGNORECASE,
@@ -99,9 +99,14 @@ def _build_x_image_variants(raw_url: str) -> Tuple[List[str], List[str], str]:
     med_url = urlunparse((parsed.scheme or "https", parsed.netloc, stem_path, "", med_q, ""))
     small_url = urlunparse((parsed.scheme or "https", parsed.netloc, stem_path, "", small_q, ""))
 
-    full_urls = dedupe_keep_order([orig_url, colon_orig, large_url, norm])
+    full_candidates: List[str] = []
+    if fmt == "webp":
+        jpg_orig_q = urlencode({"format": "jpg", "name": "orig"})
+        full_candidates.append(urlunparse((parsed.scheme or "https", parsed.netloc, stem_path, "", jpg_orig_q, "")))
+    full_candidates.extend([orig_url, colon_orig, large_url, norm])
+    full_urls = dedupe_keep_order(full_candidates)
     thumb_urls = dedupe_keep_order([small_url, med_url, norm, orig_url])
-    return full_urls, thumb_urls, default_ext
+    return full_urls, thumb_urls, ".jpg" if fmt == "webp" else default_ext
 
 
 def _video_resolution_score(url: str) -> int:
@@ -112,7 +117,7 @@ def _video_resolution_score(url: str) -> int:
 
 
 def _collect_video_variants(variants: Any, direct_url: str = "") -> List[str]:
-    """Order direct MP4 stream variants from highest bitrate/resolution down."""
+    """Order direct MP4 stream variants from highest pixel resolution and bitrate down."""
     scored: List[Tuple[Tuple[int, int], str]] = []
     if isinstance(variants, list):
         for v in variants:
@@ -126,8 +131,11 @@ def _collect_video_variants(variants: Any, direct_url: str = "") -> List[str]:
             if not is_mp4:
                 continue
             br = int(v.get("bitrate") or 0)
-            px = _video_resolution_score(u)
-            scored.append(((br, px), u))
+            px = max(
+                _video_resolution_score(u),
+                int(v.get("width") or 0) * int(v.get("height") or 0),
+            )
+            scored.append(((px, br), u))
 
     scored.sort(key=lambda item: item[0], reverse=True)
     urls = [u for _, u in scored]
@@ -374,9 +382,13 @@ def parse_vxtwitter_tweet(payload: Dict[str, Any], preferred_id: str = "") -> Op
                 if asset:
                     assets.append(asset)
             elif kind in ("video", "gif", "animated_gif"):
-                v_url = normalize_http_url(raw_u)
-                if v_url:
-                    asset = _asset_from_x_video([v_url], str(item.get("thumbnail_url") or ""))
+                v_urls = _collect_video_variants(item.get("variants"), direct_url=raw_u)
+                if not v_urls and raw_u:
+                    v_norm = normalize_http_url(raw_u)
+                    if v_norm:
+                        v_urls = [v_norm]
+                if v_urls:
+                    asset = _asset_from_x_video(v_urls, str(item.get("thumbnail_url") or ""))
                     if asset:
                         assets.append(asset)
 
@@ -482,8 +494,20 @@ def prewarm(config: Optional[Config] = None) -> None:
         threading.Thread(target=_head, args=(u,), daemon=True).start()
 
 
+def _video_quality_rank(res: ExtractResult) -> Tuple[int, int]:
+    """Rank ExtractResult for video richness (pixel resolution hint, variant candidate count)."""
+    max_px = 0
+    max_vars = 0
+    for a in res.assets:
+        if a.kind == "video":
+            max_vars = max(max_vars, len(a.urls))
+            for u in a.urls:
+                max_px = max(max_px, _video_resolution_score(u))
+    return (max_px, max_vars)
+
+
 def _run_parallel_first_hit(tasks: List[Any]) -> Tuple[Optional[ExtractResult], List[str]]:
-    """Run callables on daemon threads and return immediately on first ExtractResult with assets."""
+    """Run callables on daemon threads; return first hit immediately, or wait briefly if single-URL video arrives before multi-variant endpoints."""
     q: queue.Queue = queue.Queue()
     for fn in tasks:
         def _worker(func=fn) -> None:
@@ -495,14 +519,38 @@ def _run_parallel_first_hit(tasks: List[Any]) -> Tuple[Optional[ExtractResult], 
         threading.Thread(target=_worker, daemon=True).start()
 
     errors: List[str] = []
-    for _ in range(len(tasks)):
+    best: Optional[ExtractResult] = None
+    pending = len(tasks)
+    while pending > 0:
         ok, val = q.get()
-        if ok:
-            if val and val.assets:
-                return val, errors
-        else:
+        pending -= 1
+        if ok and val and val.assets:
+            if best is None or _video_quality_rank(val) > _video_quality_rank(best):
+                best = val
+            needs_upgrade = any(a.kind == "video" and len(a.urls) <= 1 for a in best.assets)
+            if not needs_upgrade or pending == 0:
+                return best, errors
+            deadline = time.monotonic() + 0.25
+            while pending > 0:
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    break
+                try:
+                    ok2, val2 = q.get(timeout=rem)
+                except queue.Empty:
+                    break
+                pending -= 1
+                if ok2 and val2 and val2.assets:
+                    if _video_quality_rank(val2) > _video_quality_rank(best):
+                        best = val2
+                        if not any(a.kind == "video" and len(a.urls) <= 1 for a in best.assets):
+                            break
+                elif not ok2:
+                    errors.append(str(val2))
+            return best, errors
+        if not ok:
             errors.append(str(val))
-    return None, errors
+    return best, errors
 
 
 def _get_cached_result(status_id: str) -> Optional[ExtractResult]:
