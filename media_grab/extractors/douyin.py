@@ -1,11 +1,16 @@
 """Douyin extractor: watermark-free highest-bitrate videos, image slides, and live photos."""
 
 import json
+import os
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
-from ..config import Config
+from ..config import DEFAULT_CONFIG_DIR, Config
 from ..http_client import HttpClient
 from ..utils import dedupe_keep_order, extract_balanced_json, loads_relaxed_json, normalize_http_url
 from . import ExtractResult, ExtractionError, MediaAsset
@@ -175,6 +180,12 @@ def parse_douyin_payload(data: Dict[str, Any], fallback_id: str, config: Config)
     video = item.get("video")
     if isinstance(video, dict):
         v_urls = _collect_video_urls(video)
+        cover_raw: List[str] = []
+        for cov_key in ("cover", "origin_cover"):
+            cov = video.get(cov_key)
+            if isinstance(cov, dict) and isinstance(cov.get("url_list"), list):
+                cover_raw.extend(cov["url_list"])
+        thumb_urls = _rank_image_urls(cover_raw, prefer_webp=True) if cover_raw else []
         if v_urls:
             assets.append(
                 MediaAsset(
@@ -183,6 +194,7 @@ def parse_douyin_payload(data: Dict[str, Any], fallback_id: str, config: Config)
                     default_ext=".mp4",
                     headers=DOUYIN_DL_HEADERS,
                     mobile=True,
+                    thumb_urls=thumb_urls,
                 )
             )
 
@@ -198,9 +210,6 @@ def parse_douyin_payload(data: Dict[str, Any], fallback_id: str, config: Config)
     )
 
 
-import threading
-import time
-
 _DOUYIN_FEED_URLS = (
     "https://api5-normal-c-hl.amemv.com/aweme/v1/feed/?aweme_id={aweme_id}&aid=1128",
     "https://aweme.snssdk.com/aweme/v1/feed/?aweme_id={aweme_id}&aid=1128",
@@ -209,6 +218,40 @@ _TTWID_REGISTER_URL = "https://ttwid.bytedance.com/ttwid/union/register/"
 _TTWID_TTL_SECONDS = 6 * 3600
 _TTWID_LOCK = threading.Lock()
 _TTWID_CACHE: Dict[str, Any] = {"value": "", "expires_at": 0.0}
+
+
+def _ttwid_cache_file() -> Path:
+    cfg_dir = Path(os.environ.get("MEDIA_GRAB_CONFIG_DIR", str(DEFAULT_CONFIG_DIR)))
+    return cfg_dir / ".douyin_ttwid.json"
+
+
+def _load_ttwid_disk_cache(now: float) -> str:
+    try:
+        path = _ttwid_cache_file()
+        if not path.is_file():
+            return ""
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        val = str(raw.get("value") or "").strip()
+        exp = float(raw.get("expires_at") or 0.0)
+        if val and now < exp:
+            _TTWID_CACHE["value"] = val
+            _TTWID_CACHE["expires_at"] = exp
+            return val
+    except Exception:
+        pass
+    return ""
+
+
+def _save_ttwid_disk_cache(val: str, expires_at: float) -> None:
+    try:
+        path = _ttwid_cache_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"value": val, "expires_at": expires_at}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 def _has_aweme_item(data: Any) -> bool:
@@ -222,6 +265,10 @@ def _merge_cookie_header(existing_cookie: str, name: str, value: str) -> str:
     if re.search(rf"(?:^|;\s*){re.escape(name)}=", existing_cookie):
         return existing_cookie
     return f"{existing_cookie.rstrip('; ')}; {name}={value}"
+
+
+def _has_cookie_key(cookie_str: str, name: str) -> bool:
+    return bool(cookie_str and re.search(rf"(?:^|;\s*){re.escape(name)}=", cookie_str))
 
 
 def _register_ttwid(config: Config) -> str:
@@ -259,20 +306,43 @@ def _register_ttwid(config: Config) -> str:
     return ""
 
 
-def _get_anonymous_ttwid(config: Config, force_refresh: bool = False) -> str:
-    """Return a cached anonymous ttwid cookie value if available."""
+def peek_cached_ttwid(use_disk_cache: bool = True) -> str:
+    """Return in-memory (or optional disk-cached) ttwid without performing network I/O."""
     now = time.time()
     with _TTWID_LOCK:
         cached = str(_TTWID_CACHE.get("value") or "")
-        if cached and not force_refresh and now < float(_TTWID_CACHE.get("expires_at") or 0.0):
+        if cached and now < float(_TTWID_CACHE.get("expires_at") or 0.0):
+            return cached
+        if use_disk_cache:
+            return _load_ttwid_disk_cache(now)
+    return ""
+
+
+def _get_anonymous_ttwid(
+    config: Config,
+    force_refresh: bool = False,
+    use_disk_cache: bool = True,
+) -> str:
+    """Return a cached anonymous ttwid cookie value if available."""
+    if not force_refresh:
+        cached = peek_cached_ttwid(use_disk_cache=use_disk_cache)
+        if cached:
             return cached
 
     val = _register_ttwid(config)
     if val:
+        exp = time.time() + _TTWID_TTL_SECONDS
         with _TTWID_LOCK:
             _TTWID_CACHE["value"] = val
-            _TTWID_CACHE["expires_at"] = time.time() + _TTWID_TTL_SECONDS
+            _TTWID_CACHE["expires_at"] = exp
+        if use_disk_cache:
+            _save_ttwid_disk_cache(val, exp)
     return val
+
+
+def prewarm(config: Optional[Config] = None) -> None:
+    """Best-effort background warmup of anonymous ttwid cache before user submits a link."""
+    _get_anonymous_ttwid(config or Config(), use_disk_cache=True)
 
 
 def _fetch_aweme_from_feed(aweme_id: str, client: HttpClient) -> Optional[Dict[str, Any]]:
@@ -294,18 +364,100 @@ def _fetch_aweme_from_feed(aweme_id: str, client: HttpClient) -> Optional[Dict[s
     return None
 
 
-def extract_douyin(url: str, client: HttpClient, config: Config) -> ExtractResult:
-    """Fetch Douyin share page and extract highest-quality watermark-free media."""
-    resp = client.get(url, mobile=True, follow_redirects=True)
-    html = resp.text()
-    data = _parse_douyin_json(html)
+def _share_url_for(target_url: str, aweme_id: str) -> str:
+    low = (target_url or "").lower()
+    if "iesdouyin.com" in low or "m.douyin.com/share/" in low:
+        return target_url.split("?", 1)[0]
+    return f"https://www.iesdouyin.com/share/video/{aweme_id}/"
 
-    aweme_id = _extract_aweme_id(resp.url) or _extract_aweme_id(url)
-    if not _has_aweme_item(data) and aweme_id and "iesdouyin.com" not in (resp.url or "").lower():
+
+def extract_douyin(url: str, client: HttpClient, config: Config) -> ExtractResult:
+    """Fetch Douyin share page quickly (pre-warmed ttwid + single-hop / parallel cold start) with fallbacks."""
+    is_real_http = isinstance(client, HttpClient)
+    cookie_fn = getattr(client, "cookie_for_url", None)
+    direct_id = _extract_aweme_id(url)
+
+    html = ""
+    data: Optional[Dict[str, Any]] = None
+    resolved_url = url
+    aweme_id = direct_id
+    used_cached_ttwid = False
+
+    if is_real_http and direct_id and not config.douyin_cookie:
+        # Skip downloading heavy 889KB desktop SSR HTML on www.douyin.com when aweme_id is already in URL.
+        target_share = _share_url_for(url, direct_id)
+        had_cached = bool(peek_cached_ttwid(use_disk_cache=True))
+        ttwid = _get_anonymous_ttwid(config, use_disk_cache=True)
+        used_cached_ttwid = bool(ttwid and had_cached)
+        hdrs = {"Cookie": f"ttwid={ttwid}"} if ttwid else None
+        resp = client.get(target_share, headers=hdrs, mobile=True, follow_redirects=True)
+        resolved_url = resp.url
+        html = resp.text()
+        data = _parse_douyin_json(html)
+    elif is_real_http:
+        existing_cookie = cookie_fn(url) if callable(cookie_fn) else ""
+        if _has_cookie_key(existing_cookie, "ttwid"):
+            resp = client.get(url, mobile=True, follow_redirects=True)
+            resolved_url = resp.url
+            html = resp.text()
+            data = _parse_douyin_json(html)
+            aweme_id = _extract_aweme_id(resolved_url) or direct_id
+        else:
+            cached_ttwid = peek_cached_ttwid(use_disk_cache=True)
+            if cached_ttwid:
+                used_cached_ttwid = True
+                hdrs = {"Cookie": _merge_cookie_header(existing_cookie, "ttwid", cached_ttwid)}
+                resp = client.get(url, headers=hdrs, mobile=True, follow_redirects=True)
+                resolved_url = resp.url
+                html = resp.text()
+                data = _parse_douyin_json(html)
+                aweme_id = _extract_aweme_id(resolved_url) or direct_id
+            else:
+                # Cold start: resolve shortlink redirect and register ttwid concurrently.
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    fut_nr = pool.submit(client.get, url, None, True, False)
+                    fut_tok = pool.submit(_get_anonymous_ttwid, config, False, True)
+                    nr_resp = fut_nr.result()
+                    ttwid = fut_tok.result()
+
+                loc = nr_resp.headers.get("location") or nr_resp.url or url
+                resolved_url = loc
+                aweme_id = _extract_aweme_id(loc) or direct_id
+                if nr_resp.status < 300 and nr_resp.body:
+                    html = nr_resp.text()
+                    data = _parse_douyin_json(html)
+                elif not aweme_id and loc and loc != url:
+                    hdrs = {"Cookie": f"ttwid={ttwid}"} if ttwid else None
+                    resp = client.get(loc, headers=hdrs, mobile=True, follow_redirects=True)
+                    resolved_url = resp.url
+                    html = resp.text()
+                    data = _parse_douyin_json(html)
+                    aweme_id = _extract_aweme_id(resolved_url) or direct_id
+                if not _has_aweme_item(data) and aweme_id:
+                    target_share = _share_url_for(loc, aweme_id)
+                    share_cookie = cookie_fn(target_share) if callable(cookie_fn) else ""
+                    hdrs = (
+                        {"Cookie": _merge_cookie_header(share_cookie, "ttwid", ttwid)}
+                        if ttwid
+                        else None
+                    )
+                    resp = client.get(target_share, headers=hdrs, mobile=True, follow_redirects=True)
+                    resolved_url = resp.url
+                    html = resp.text()
+                    data = _parse_douyin_json(html)
+    else:
+        resp = client.get(url, mobile=True, follow_redirects=True)
+        resolved_url = resp.url
+        html = resp.text()
+        data = _parse_douyin_json(html)
+        aweme_id = _extract_aweme_id(resolved_url) or direct_id
+
+    if not _has_aweme_item(data) and aweme_id and "iesdouyin.com" not in (resolved_url or "").lower():
         share_url = f"https://www.iesdouyin.com/share/video/{aweme_id}/"
         try:
             resp2 = client.get(share_url, mobile=True, follow_redirects=True)
             html = resp2.text()
+            resolved_url = resp2.url
             cand = _parse_douyin_json(html)
             if _has_aweme_item(cand) or not data:
                 data = cand
@@ -313,16 +465,15 @@ def extract_douyin(url: str, client: HttpClient, config: Config) -> ExtractResul
             pass
 
     if not _has_aweme_item(data) and aweme_id:
-        feed_data = _fetch_aweme_from_feed(aweme_id, client)
-        if feed_data:
-            data = feed_data
-
-    if not _has_aweme_item(data) and aweme_id:
-        base_share = resp.url.split("?", 1)[0] if "iesdouyin.com" in (resp.url or "").lower() else f"https://www.iesdouyin.com/share/video/{aweme_id}/"
-        cookie_fn = getattr(client, "cookie_for_url", None)
+        base_share = _share_url_for(resolved_url, aweme_id)
         existing_cookie = cookie_fn(base_share) if callable(cookie_fn) else ""
-        if not re.search(r"(?:^|;\s*)ttwid=", existing_cookie):
-            ttwid = _get_anonymous_ttwid(config)
+        if not _has_cookie_key(existing_cookie, "ttwid"):
+            need_refresh = used_cached_ttwid
+            ttwid = _get_anonymous_ttwid(
+                config,
+                force_refresh=need_refresh,
+                use_disk_cache=is_real_http,
+            )
             if ttwid:
                 try:
                     hdrs = {"Cookie": _merge_cookie_header(existing_cookie, "ttwid", ttwid)}
@@ -333,6 +484,11 @@ def extract_douyin(url: str, client: HttpClient, config: Config) -> ExtractResul
                         data = cand
                 except Exception:
                     pass
+
+    if not _has_aweme_item(data) and aweme_id:
+        feed_data = _fetch_aweme_from_feed(aweme_id, client)
+        if feed_data:
+            data = feed_data
 
     if not _has_aweme_item(data):
         if any(k in html for k in ("验证码", "安全验证", "captcha", "waf")):

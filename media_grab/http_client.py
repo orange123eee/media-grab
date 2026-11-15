@@ -169,6 +169,23 @@ class HttpClient:
                     mobile=mobile,
                     range_header=range_header,
                 )
+            except urllib.error.HTTPError as e:
+                if e.code == 403 and headers and any(k.lower() == "referer" for k in headers):
+                    stripped = {k: v for k, v in headers.items() if k.lower() != "referer"}
+                    try:
+                        return self._open_one(
+                            cand,
+                            default_ext=default_ext,
+                            expected_prefix=expected_prefix,
+                            headers=stripped,
+                            mobile=mobile,
+                            range_header=range_header,
+                        )
+                    except Exception as retry_err:
+                        last_err = retry_err
+                        continue
+                last_err = e
+                continue
             except Exception as e:
                 last_err = e
                 continue

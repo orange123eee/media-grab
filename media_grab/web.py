@@ -680,7 +680,8 @@ function renderResult(d) {
   }
 
   for (const v of videos) {
-    html += '<div class="vbox"><video controls playsinline preload="metadata" src="' + esc(v.preview_url) + '"></video></div>' +
+    const posterAttr = (v.thumb_url && v.thumb_url !== v.preview_url) ? ' poster="' + esc(v.thumb_url) + '"' : '';
+    html += '<div class="vbox"><video controls playsinline preload="metadata"' + posterAttr + ' src="' + esc(v.preview_url) + '"></video></div>' +
       '<div class="acts"><a class="btn pri" href="' + esc(v.download_url) + '">保存最高画质无水印视频</a></div>';
   }
 
@@ -968,6 +969,8 @@ class JobStore:
 
     def thumb_urls_for(self, sa: StoredAsset) -> List[str]:
         if sa.asset.thumb_urls:
+            if sa.asset.kind in ("video", "live_video"):
+                return dedupe_keep_order(list(sa.asset.thumb_urls))
             return dedupe_keep_order(list(sa.asset.thumb_urls) + list(sa.asset.urls))
         return self.candidate_urls_for(sa)
 
@@ -1277,7 +1280,7 @@ def make_handler(state: WebAppState):
                                 "kind": sa.asset.kind,
                                 "thumb_url": (
                                     f"/api/media/{sa.asset_id}?thumb=1"
-                                    if sa.asset.kind == "image"
+                                    if sa.asset.thumb_urls
                                     else f"/api/media/{sa.asset_id}"
                                 ),
                                 "preview_url": f"/api/media/{sa.asset_id}",
@@ -1344,7 +1347,11 @@ def make_handler(state: WebAppState):
                 return
 
             _, client = state.client()
-            expected = "video" if sa.asset.kind in ("video", "live_video") else "image"
+            expected = (
+                "image"
+                if (as_thumb and sa.asset.thumb_urls)
+                else ("video" if sa.asset.kind in ("video", "live_video") else "image")
+            )
             range_hdr = self.headers.get("Range")
             urls = (
                 state.store.thumb_urls_for(sa)
@@ -1466,6 +1473,16 @@ def serve(
     srv = ReusableThreadingHTTPServer((host, port), make_handler(state))
     state.server = srv
     android.wake_lock()
+
+    def _prewarm_extractors() -> None:
+        try:
+            from .extractors.douyin import prewarm as _prewarm_douyin
+
+            _prewarm_douyin(load_config(state.config_dir))
+        except Exception:
+            pass
+
+    threading.Thread(target=_prewarm_extractors, daemon=True).start()
 
     if idle_timeout > 0:
         def _watchdog() -> None:
