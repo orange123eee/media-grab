@@ -14,6 +14,7 @@ if [ ! -d "$REPO_DIR/.git" ]; then
 fi
 
 echo "[gup] 正在从 GitHub 拉取更新..."
-git -C "$REPO_DIR" pull --ff-only
+git -C "$REPO_DIR" fetch origin main
+git -C "$REPO_DIR" reset --hard origin/main
 bash "$REPO_DIR/install.sh" --update
 echo "[gup] 已更新到最新版本，Cookie 和设置保持不变。"

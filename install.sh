@@ -69,11 +69,6 @@ cp "$SCRIPT_DIR/bin/termux-url-opener" "$BIN_DIR/termux-url-opener"
 cp "$SCRIPT_DIR/bin/grab-clipboard.sh" "$SHORTCUT_DIR/提图提视频.sh"
 cp "$SCRIPT_DIR/bin/start-web.sh" "$SHORTCUT_DIR/无水印网页版.sh"
 
-sed -i 's/\r$//' "$BIN_DIR/termux-url-opener" "$SHORTCUT_DIR/提图提视频.sh" "$SHORTCUT_DIR/无水印网页版.sh" \
-  "$SCRIPT_DIR/bin/start-web.sh" "$SCRIPT_DIR/bin/update.sh"
-chmod +x "$BIN_DIR/termux-url-opener" "$SHORTCUT_DIR/提图提视频.sh" "$SHORTCUT_DIR/无水印网页版.sh" \
-  "$SCRIPT_DIR/bin/start-web.sh" "$SCRIPT_DIR/bin/update.sh"
-
 TARGET_BIN="${PREFIX:-$HOME/.local}/bin"
 mkdir -p "$TARGET_BIN"
 
@@ -91,7 +86,10 @@ EOF
 
 cp "$SCRIPT_DIR/bin/start-web.sh" "$TARGET_BIN/gw"
 cp "$SCRIPT_DIR/bin/update.sh" "$TARGET_BIN/gup"
-chmod +x "$TARGET_BIN/media-grab" "$TARGET_BIN/g" "$TARGET_BIN/gw" "$TARGET_BIN/gup"
+sed -i 's/\r$//' "$BIN_DIR/termux-url-opener" "$SHORTCUT_DIR/提图提视频.sh" "$SHORTCUT_DIR/无水印网页版.sh" \
+  "$TARGET_BIN/gw" "$TARGET_BIN/gup"
+chmod +x "$BIN_DIR/termux-url-opener" "$SHORTCUT_DIR/提图提视频.sh" "$SHORTCUT_DIR/无水印网页版.sh" \
+  "$TARGET_BIN/media-grab" "$TARGET_BIN/g" "$TARGET_BIN/gw" "$TARGET_BIN/gup"
 
 BASHRC="$HOME/.bashrc"
 touch "$BASHRC"
