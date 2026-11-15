@@ -220,7 +220,7 @@ class HttpClient:
             if ct.startswith("text/html") or ct.startswith("application/json"):
                 raise HttpError(f"响应类型异常 ({ct})，可能触发了防盗链或风控")
 
-            first_chunk = resp.read(65536)
+            first_chunk = resp.read(8192)
             if not first_chunk:
                 raise HttpError("响应内容为空")
 

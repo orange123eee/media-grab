@@ -1,11 +1,15 @@
 """X (Twitter) extractor: highest-bitrate MP4 videos, GIFs, and original (:orig) images."""
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import math
+import queue
 import re
+import socket
+import threading
+import time
+import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 from ..config import Config
 from ..http_client import HttpClient
@@ -14,6 +18,15 @@ from . import ExtractResult, ExtractionError, MediaAsset
 
 _STATUS_RE = re.compile(r"/(?:([A-Za-z0-9_]{1,30})/)?status(?:es)?/(\d+)")
 _RES_HINT_RE = re.compile(r"/(\d{2,5})x(\d{2,5})/")
+_META_OR_JS_REDIRECT_RE = re.compile(
+    r'(?:url\s*=|location\.replace\s*\(\s*["\']|location\.href\s*=\s*["\'])(https?://[^\s"\'<>)]+)',
+    re.IGNORECASE,
+)
+
+_RESULT_CACHE_TTL = 60.0
+_RESULT_CACHE_MAX = 32
+_RESULT_CACHE_LOCK = threading.Lock()
+_RESULT_CACHE: Dict[str, Tuple[float, ExtractResult]] = {}
 
 
 def _extract_status_info(url: str) -> Tuple[str, str]:
@@ -87,7 +100,7 @@ def _build_x_image_variants(raw_url: str) -> Tuple[List[str], List[str], str]:
     small_url = urlunparse((parsed.scheme or "https", parsed.netloc, stem_path, "", small_q, ""))
 
     full_urls = dedupe_keep_order([orig_url, colon_orig, large_url, norm])
-    thumb_urls = dedupe_keep_order([med_url, small_url, norm, orig_url])
+    thumb_urls = dedupe_keep_order([small_url, med_url, norm, orig_url])
     return full_urls, thumb_urls, default_ext
 
 
@@ -298,32 +311,234 @@ def parse_syndication_tweet(payload: Dict[str, Any], preferred_id: str = "") -> 
     )
 
 
+def _asset_from_x_photo(raw_url: str) -> Optional[MediaAsset]:
+    full_urls, thumb_urls, ext = _build_x_image_variants(raw_url)
+    if not full_urls:
+        return None
+    return MediaAsset(
+        kind="image",
+        urls=full_urls,
+        default_ext=ext,
+        headers={},
+        mobile=False,
+        thumb_urls=thumb_urls,
+    )
+
+
+def _asset_from_x_video(video_urls: List[str], thumb_raw: str) -> Optional[MediaAsset]:
+    if not video_urls:
+        return None
+    _, thumb_urls, _ = _build_x_image_variants(thumb_raw) if thumb_raw else ([], [], ".jpg")
+    return MediaAsset(
+        kind="video",
+        urls=video_urls,
+        default_ext=".mp4",
+        headers={},
+        mobile=False,
+        thumb_urls=thumb_urls,
+    )
+
+
+def parse_vxtwitter_tweet(payload: Dict[str, Any], preferred_id: str = "") -> Optional[ExtractResult]:
+    """Parse api.vxtwitter.com compact JSON payload into ExtractResult."""
+    if not isinstance(payload, dict) or payload.get("error"):
+        return None
+
+    tweet = payload
+    media_ext = tweet.get("media_extended")
+    media_urls = tweet.get("mediaURLs")
+    if (not isinstance(media_ext, list) or not media_ext) and (not isinstance(media_urls, list) or not media_urls):
+        for nested_key in ("qrt", "retweet"):
+            nested = tweet.get(nested_key)
+            if isinstance(nested, dict) and (nested.get("media_extended") or nested.get("mediaURLs")):
+                media_ext = nested.get("media_extended")
+                media_urls = nested.get("mediaURLs")
+                break
+
+    item_id = _first_nonempty_text(tweet.get("tweetID"), tweet.get("conversationID"), preferred_id, "x")
+    title = _first_nonempty_text(tweet.get("text"))
+    author = _first_nonempty_text(
+        tweet.get("user_name"),
+        f"@{tweet['user_screen_name']}" if tweet.get("user_screen_name") else "",
+    )
+
+    assets: List[MediaAsset] = []
+    if isinstance(media_ext, list):
+        for item in media_ext:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("type") or "").lower()
+            raw_u = str(item.get("url") or "")
+            if kind in ("image", "photo"):
+                asset = _asset_from_x_photo(raw_u)
+                if asset:
+                    assets.append(asset)
+            elif kind in ("video", "gif", "animated_gif"):
+                v_url = normalize_http_url(raw_u)
+                if v_url:
+                    asset = _asset_from_x_video([v_url], str(item.get("thumbnail_url") or ""))
+                    if asset:
+                        assets.append(asset)
+
+    if not assets and isinstance(media_urls, list):
+        for raw_u in media_urls:
+            norm = normalize_http_url(str(raw_u or ""))
+            if not norm:
+                continue
+            if ".mp4" in urlparse(norm).path.lower():
+                asset = _asset_from_x_video([norm], "")
+            else:
+                asset = _asset_from_x_photo(norm)
+            if asset:
+                assets.append(asset)
+
+    if not assets:
+        return None
+
+    return ExtractResult(
+        platform="x",
+        item_id=item_id,
+        title=title or f"x_{item_id}",
+        author=author,
+        assets=assets,
+    )
+
+
 def _resolve_status_url(url: str, client: HttpClient, timeout: int) -> Tuple[str, str]:
     screen_name, status_id = _extract_status_info(url)
     if status_id:
         return screen_name, status_id
 
-    resp = client.get(url, mobile=False, follow_redirects=True, timeout=timeout)
-    screen_name, status_id = _extract_status_info(resp.url)
-    if status_id:
-        return screen_name, status_id
+    hop_timeout = min(max(1, int(timeout)), 5)
+    curr = url
+    for _ in range(4):
+        resp = client.get(curr, mobile=False, follow_redirects=False, timeout=hop_timeout)
+        target = resp.headers.get("location") or resp.url or ""
+        if target:
+            full_loc = urljoin(curr, target)
+            sn, sid = _extract_status_info(full_loc)
+            if sid:
+                return sn, sid
+            if resp.status in (301, 302, 303, 307, 308) and full_loc != curr:
+                curr = full_loc
+                continue
 
-    html = resp.text()
-    m = _STATUS_RE.search(html)
-    if m:
-        user = (m.group(1) or "").strip()
-        if user.lower() in ("i", "web"):
-            user = ""
-        return user, m.group(2)
+        html = (resp.text() if resp.body else "").replace("\\/", "/")
+        m = _STATUS_RE.search(html)
+        if m:
+            user = (m.group(1) or "").strip()
+            if user.lower() in ("i", "web"):
+                user = ""
+            return user, m.group(2)
+
+        rm = _META_OR_JS_REDIRECT_RE.search(html)
+        if rm:
+            nxt = urljoin(curr, rm.group(1).strip())
+            sn, sid = _extract_status_info(nxt)
+            if sid:
+                return sn, sid
+            if nxt != curr:
+                curr = nxt
+                continue
+        break
     return "", ""
+
+
+def prewarm(config: Optional[Config] = None) -> None:
+    """Warm DNS and TLS routes for X API and media CDNs in the background."""
+    hosts = (
+        "cdn.syndication.twimg.com",
+        "api.fxtwitter.com",
+        "api.vxtwitter.com",
+        "pbs.twimg.com",
+        "video.twimg.com",
+    )
+
+    def _dns(h: str) -> None:
+        try:
+            socket.getaddrinfo(h, 443, type=socket.SOCK_STREAM)
+        except Exception:
+            pass
+
+    def _head(u: str) -> None:
+        try:
+            req = urllib.request.Request(
+                u,
+                headers={"User-Agent": "media-grab/1.0", "Accept": "application/json"},
+                method="HEAD",
+            )
+            with urllib.request.urlopen(req, timeout=2):
+                pass
+        except Exception:
+            pass
+
+    for h in hosts:
+        threading.Thread(target=_dns, args=(h,), daemon=True).start()
+    for u in (
+        "https://cdn.syndication.twimg.com/tweet-result?id=20&lang=en&token=1",
+        "https://api.vxtwitter.com/",
+        "https://api.fxtwitter.com/",
+    ):
+        threading.Thread(target=_head, args=(u,), daemon=True).start()
+
+
+def _run_parallel_first_hit(tasks: List[Any]) -> Tuple[Optional[ExtractResult], List[str]]:
+    """Run callables on daemon threads and return immediately on first ExtractResult with assets."""
+    q: queue.Queue = queue.Queue()
+    for fn in tasks:
+        def _worker(func=fn) -> None:
+            try:
+                q.put((True, func()))
+            except Exception as exc:
+                q.put((False, str(exc)))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    errors: List[str] = []
+    for _ in range(len(tasks)):
+        ok, val = q.get()
+        if ok:
+            if val and val.assets:
+                return val, errors
+        else:
+            errors.append(str(val))
+    return None, errors
+
+
+def _get_cached_result(status_id: str) -> Optional[ExtractResult]:
+    now = time.monotonic()
+    with _RESULT_CACHE_LOCK:
+        entry = _RESULT_CACHE.get(status_id)
+        if not entry:
+            return None
+        ts, res = entry
+        if now - ts > _RESULT_CACHE_TTL:
+            _RESULT_CACHE.pop(status_id, None)
+            return None
+        return res
+
+
+def _put_cached_result(status_id: str, res: ExtractResult) -> None:
+    now = time.monotonic()
+    with _RESULT_CACHE_LOCK:
+        _RESULT_CACHE[status_id] = (now, res)
+        if len(_RESULT_CACHE) > _RESULT_CACHE_MAX:
+            oldest = min(_RESULT_CACHE.items(), key=lambda kv: kv[1][0])[0]
+            _RESULT_CACHE.pop(oldest, None)
 
 
 def extract_x(url: str, client: HttpClient, config: Config) -> ExtractResult:
     """Fetch X (Twitter) tweet metadata concurrently from public endpoints and extract media."""
-    api_timeout = min(int(config.timeout), 10)
+    api_timeout = min(int(config.timeout), 6)
     screen_name, status_id = _resolve_status_url(url, client, api_timeout)
     if not status_id:
         raise ExtractionError("未在链接里识别到 X 推文 ID（需要包含 /status/数字 的帖子链接）。")
+
+    use_cache = type(client) is HttpClient
+    if use_cache:
+        cached = _get_cached_result(status_id)
+        if cached is not None:
+            return cached
 
     synd_url = (
         f"https://cdn.syndication.twimg.com/tweet-result"
@@ -331,6 +546,7 @@ def extract_x(url: str, client: HttpClient, config: Config) -> ExtractResult:
     )
     user_part = screen_name or "i"
     fx_url = f"https://api.fxtwitter.com/{user_part}/status/{status_id}"
+    vx_url = f"https://api.vxtwitter.com/{user_part}/status/{status_id}"
     fixup_url = f"https://api.fixupx.com/{user_part}/status/{status_id}"
 
     saw_tweet = False
@@ -370,27 +586,35 @@ def extract_x(url: str, client: HttpClient, config: Config) -> ExtractResult:
             saw_tweet = True
         return parse_fxtwitter_tweet(data, status_id)
 
-    errors: List[str] = []
-    pool = ThreadPoolExecutor(max_workers=2)
-    try:
-        futs = [
-            pool.submit(_call_synd),
-            pool.submit(_call_fx, fx_url),
-        ]
-        for fut in as_completed(futs):
-            try:
-                res = fut.result()
-                if res and res.assets:
-                    return res
-            except Exception as e:
-                errors.append(str(e))
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+    def _call_vx() -> Optional[ExtractResult]:
+        nonlocal saw_tweet
+        resp = client.get(
+            vx_url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "media-grab/1.0 (+https://github.com/orange123eee/media-grab)",
+            },
+            mobile=False,
+            follow_redirects=True,
+            timeout=api_timeout,
+        )
+        data = json.loads(resp.text())
+        if isinstance(data, dict) and data.get("tweetID") and not data.get("error"):
+            saw_tweet = True
+        return parse_vxtwitter_tweet(data, status_id)
+
+    res, errors = _run_parallel_first_hit([_call_synd, _call_vx, lambda: _call_fx(fx_url)])
+    if res and res.assets:
+        if use_cache:
+            _put_cached_result(status_id, res)
+        return res
 
     if not saw_tweet:
         try:
             res_fb = _call_fx(fixup_url)
             if res_fb and res_fb.assets:
+                if use_cache:
+                    _put_cached_result(status_id, res_fb)
                 return res_fb
         except Exception as e:
             errors.append(str(e))

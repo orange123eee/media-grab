@@ -1704,10 +1704,17 @@ def serve(
     android.wake_lock()
 
     def _prewarm_extractors() -> None:
+        cfg = load_config(state.config_dir)
+        try:
+            from .extractors.x import prewarm as _prewarm_x
+
+            _prewarm_x(cfg)
+        except Exception:
+            pass
         try:
             from .extractors.douyin import prewarm as _prewarm_douyin
 
-            _prewarm_douyin(load_config(state.config_dir))
+            _prewarm_douyin(cfg)
         except Exception:
             pass
 
@@ -1731,7 +1738,7 @@ def serve(
 
     primary_ip, other_ips = _guess_lan_ips()
     print("=" * 56)
-    print("  media-grab 网页版已启动（抖音 · 小红书无水印提取）")
+    print("  media-grab 网页版已启动（抖音 · 小红书 · X 无水印提取）")
     print(f"  本机访问: http://127.0.0.1:{port}")
     if host != "127.0.0.1":
         if primary_ip:

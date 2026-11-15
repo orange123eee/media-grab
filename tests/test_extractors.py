@@ -12,7 +12,13 @@ from media_grab.cli import _build_stem, main as cli_main, run_grab, save_cookie_
 from media_grab.config import Config, load_config
 from media_grab.extractors import ExtractResult, ExtractionError, MediaAsset, extract
 from media_grab.extractors.douyin import _parse_douyin_json, extract_douyin, parse_douyin_payload
-from media_grab.extractors.x import extract_x, parse_fxtwitter_tweet, parse_syndication_tweet
+from media_grab.extractors.x import (
+    _RESULT_CACHE,
+    extract_x,
+    parse_fxtwitter_tweet,
+    parse_syndication_tweet,
+    parse_vxtwitter_tweet,
+)
 from media_grab.extractors.xiaohongshu import _parse_xhs_state, extract_xiaohongshu, parse_xhs_state
 from media_grab.http_client import HttpClient, HttpError, HttpResponse
 from media_grab.utils import (
@@ -368,7 +374,7 @@ class XExtractorTests(unittest.TestCase):
         self.assertEqual(res.author, "NASA")
         self.assertEqual([a.kind for a in res.assets], ["image", "video"])
         self.assertEqual(res.assets[0].urls[0], "https://pbs.twimg.com/media/AbCdEfG?format=jpg&name=orig")
-        self.assertEqual(res.assets[0].thumb_urls[0], "https://pbs.twimg.com/media/AbCdEfG?format=jpg&name=medium")
+        self.assertEqual(res.assets[0].thumb_urls[0], "https://pbs.twimg.com/media/AbCdEfG?format=jpg&name=small")
         self.assertEqual(
             res.assets[1].urls[0],
             "https://video.twimg.com/ext_tw_video/1/pu/vid/avc1/1920x1080/hi.mp4",
@@ -441,13 +447,17 @@ class XExtractorTests(unittest.TestCase):
         class FakeClient:
             def __init__(self):
                 self.calls = []
+                self.follow_flags = []
 
             def get(self, url, **kwargs):
                 self.calls.append(url)
                 if "t.co/" in url:
-                    return HttpResponse(200, "https://x.com/dev/status/9876543210?s=20", {}, b"")
+                    self.follow_flags.append(kwargs.get("follow_redirects"))
+                    return HttpResponse(302, url, {"location": "https://x.com/dev/status/9876543210?s=20"}, b"")
                 if "cdn.syndication.twimg.com" in url:
                     raise HttpError("syndication timeout")
+                if "api.vxtwitter.com" in url:
+                    return HttpResponse(200, url, {}, b"{}")
                 if "api.fxtwitter.com" in url:
                     return HttpResponse(200, url, {}, b"{}")
                 if "api.fixupx.com" in url:
@@ -458,7 +468,50 @@ class XExtractorTests(unittest.TestCase):
         res = extract_x("https://t.co/shortX", fc, Config(timeout=20))
         self.assertEqual(res.platform, "x")
         self.assertEqual(res.item_id, "9876543210")
+        self.assertEqual(fc.follow_flags, [False])
+        self.assertFalse(any("://x.com/" in u for u in fc.calls))
         self.assertTrue(any("api.fixupx.com/dev/status/9876543210" in u for u in fc.calls))
+
+    def test_parse_vxtwitter_tweet_and_result_cache(self):
+        vx_payload = {
+            "tweetID": "555666777",
+            "text": "VX compact payload",
+            "user_name": "FastUser",
+            "user_screen_name": "fastuser",
+            "media_extended": [
+                {"type": "image", "url": "https://pbs.twimg.com/media/VxImg.jpg"},
+                {
+                    "type": "video",
+                    "url": "https://video.twimg.com/ext_tw_video/1/vid/1080.mp4",
+                    "thumbnail_url": "https://pbs.twimg.com/ext_tw_video_thumb/1/th.jpg",
+                },
+            ],
+        }
+        res = parse_vxtwitter_tweet(vx_payload)
+        self.assertIsNotNone(res)
+        self.assertEqual([a.kind for a in res.assets], ["image", "video"])
+        self.assertEqual(res.assets[0].urls[0], "https://pbs.twimg.com/media/VxImg?format=jpg&name=orig")
+        self.assertEqual(res.assets[0].thumb_urls[0], "https://pbs.twimg.com/media/VxImg?format=jpg&name=small")
+        self.assertEqual(res.assets[1].urls[0], "https://video.twimg.com/ext_tw_video/1/vid/1080.mp4")
+
+        # Repeated calls through real HttpClient reuse short-TTL cache without extra network requests.
+        _RESULT_CACHE.pop("555666777", None)
+        client = HttpClient(Config(timeout=10))
+        get_calls = []
+
+        def fake_get(url, **kwargs):
+            get_calls.append(url)
+            if "api.vxtwitter.com" in url:
+                return HttpResponse(200, url, {}, json.dumps(vx_payload).encode("utf-8"))
+            raise HttpError("other mirror unavailable")
+
+        with patch.object(client, "get", side_effect=fake_get):
+            first = extract_x("https://x.com/fastuser/status/555666777", client, client.config)
+            first_calls = len(get_calls)
+            second = extract_x("https://x.com/fastuser/status/555666777", client, client.config)
+        self.assertGreaterEqual(first_calls, 1)
+        self.assertEqual(len(get_calls), first_calls)
+        self.assertIs(second, first)
 
     def test_extract_x_text_only_tweet_reports_no_media_without_hitting_fallback(self):
         class TextOnlyClient:
