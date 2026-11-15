@@ -2,6 +2,7 @@
 
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -28,17 +29,24 @@ def get_clipboard() -> str:
         return ""
 
 
-def scan_media(paths: Iterable[Path]) -> None:
+def scan_media(paths: Iterable[Path], wait: bool = True) -> None:
     """Trigger Android media store scan so saved files appear immediately in Gallery."""
     if not has_cmd("termux-media-scan"):
         return
     file_args = [str(p) for p in paths if p and p.exists()]
     if not file_args:
         return
-    try:
-        subprocess.run(["termux-media-scan", *file_args], capture_output=True, timeout=15)
-    except Exception:
-        pass
+
+    def _run() -> None:
+        try:
+            subprocess.run(["termux-media-scan", *file_args], capture_output=True, timeout=15)
+        except Exception:
+            pass
+
+    if wait:
+        _run()
+    else:
+        threading.Thread(target=_run, daemon=True).start()
 
 
 def notify(title: str, content: str, notif_id: str = "media_grab") -> None:

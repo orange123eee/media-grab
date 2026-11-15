@@ -155,6 +155,7 @@ INDEX_HTML = r"""<!doctype html>
     --err: #f85149;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { overscroll-behavior-y: contain; }
   body {
     margin: 0;
     padding: calc(14px + env(safe-area-inset-top)) 13px calc(76px + env(safe-area-inset-bottom));
@@ -166,6 +167,7 @@ INDEX_HTML = r"""<!doctype html>
     color: var(--text);
     font: 15px/1.55 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
     min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
   }
   .wrap { max-width: 680px; margin: 0 auto; }
   .hd { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; padding: 2px 2px 0; }
@@ -190,8 +192,9 @@ INDEX_HTML = r"""<!doctype html>
   }
   .pill:active { opacity: .82; background: rgba(255, 255, 255, .08); }
   .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: 18px;
-    padding: 14px; margin-bottom: 13px; backdrop-filter: blur(14px);
+    background: linear-gradient(180deg, rgba(21, 27, 39, .97), rgba(15, 19, 28, .97));
+    border: 1px solid var(--line); border-radius: 18px;
+    padding: 14px; margin-bottom: 13px;
     box-shadow: 0 10px 30px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .04);
   }
   .card.anim { animation: cardIn .22s cubic-bezier(.22, .68, 0, 1); }
@@ -231,7 +234,7 @@ INDEX_HTML = r"""<!doctype html>
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
     min-height: 44px; border-radius: 12px; font: 600 14px/1 inherit; padding: 0 13px;
     border: 1px solid var(--line); background: #202736; color: var(--text);
-    text-decoration: none; cursor: pointer; white-space: nowrap;
+    text-decoration: none; cursor: pointer; white-space: nowrap; touch-action: manipulation;
     transition: transform .08s, opacity .15s, background .15s, border-color .15s;
   }
   button svg, a.btn svg { width: 15px; height: 15px; flex-shrink: 0; }
@@ -287,18 +290,29 @@ INDEX_HTML = r"""<!doctype html>
   .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .grid.single { grid-template-columns: minmax(0, 1fr); }
   @media (min-width: 560px) { .grid:not(.single) { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-  .item { background: #0d1119; border: 1.5px solid var(--line); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; transition: border-color .16s, box-shadow .16s; }
+  .item {
+    background: #0d1119; border: 1.5px solid var(--line); border-radius: 14px; overflow: hidden;
+    display: flex; flex-direction: column; contain: layout style paint;
+    transition: border-color .16s ease, box-shadow .16s ease;
+  }
   .item.sel { border-color: var(--accent-hi); box-shadow: 0 0 0 1px rgba(59, 130, 246, .35), 0 6px 18px rgba(37, 99, 235, .18); }
   .thumb {
     position: relative; aspect-ratio: 4/5; overflow: hidden; cursor: zoom-in;
-    background: linear-gradient(110deg, #121722 25%, #1b2232 45%, #121722 65%);
-    background-size: 200% 100%; animation: skel 1.3s linear infinite;
+    background: #121722; touch-action: manipulation;
   }
-  .thumb.done { animation: none; background: #0a0d14; }
+  .thumb::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(105deg, transparent 20%, rgba(255, 255, 255, .07) 48%, transparent 76%);
+    transform: translateX(-100%);
+    animation: skelSweep 1.15s ease-in-out infinite;
+    will-change: transform;
+  }
+  .thumb.done::before { display: none; animation: none; }
+  .thumb.done { background: #0a0d14; }
   .grid.single .thumb { aspect-ratio: auto; min-height: 180px; max-height: 52vh; }
   .grid.single .thumb img { max-height: 52vh; object-fit: contain; }
-  @keyframes skel { 0% { background-position: 180% 0; } 100% { background-position: -20% 0; } }
-  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .22s ease; }
+  @keyframes skelSweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .18s ease-out; }
   .thumb img.loaded { opacity: 1; }
   .thumb.broken img { opacity: 0; }
   .thumb-err {
@@ -307,14 +321,15 @@ INDEX_HTML = r"""<!doctype html>
   }
   .thumb.broken .thumb-err { display: flex; }
   .tags-tl { position: absolute; left: 7px; top: 7px; display: flex; gap: 5px; z-index: 2; pointer-events: none; }
-  .tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 7px; background: rgba(0,0,0,.62); color: #fff; backdrop-filter: blur(6px); }
-  .tag.live { background: rgba(37, 99, 235, .82); }
+  .tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 7px; background: rgba(6, 9, 15, .76); color: #fff; border: 1px solid rgba(255,255,255,.08); }
+  .tag.live { background: rgba(37, 99, 235, .88); border-color: rgba(147,197,253,.35); }
   .pick-btn {
     position: absolute; right: 7px; top: 7px; width: 28px; height: 28px; min-height: 28px; padding: 0;
-    border-radius: 999px; border: 1.5px solid rgba(255, 255, 255, .74);
-    background: rgba(8, 12, 20, .54); backdrop-filter: blur(5px);
-    color: rgba(255, 255, 255, .42); font-size: 13px; font-weight: 700; z-index: 3;
+    border-radius: 999px; border: 1.5px solid rgba(255, 255, 255, .78);
+    background: rgba(8, 12, 20, .74);
+    color: rgba(255, 255, 255, .48); font-size: 13px; font-weight: 700; z-index: 3;
     display: flex; align-items: center; justify-content: center;
+    transition: transform .12s ease, background .14s ease, border-color .14s ease;
   }
   .pick-btn::after { content: ""; position: absolute; inset: -8px; }
   .pick-btn.on {
@@ -323,7 +338,7 @@ INDEX_HTML = r"""<!doctype html>
   }
   .zoom-ic {
     position: absolute; right: 7px; bottom: 7px; width: 24px; height: 24px; border-radius: 7px;
-    background: rgba(0, 0, 0, .52); color: rgba(255, 255, 255, .86); backdrop-filter: blur(4px);
+    background: rgba(6, 9, 15, .70); color: rgba(255, 255, 255, .88);
     display: flex; align-items: center; justify-content: center; pointer-events: none;
   }
   .zoom-ic svg { width: 13px; height: 13px; }
@@ -341,15 +356,20 @@ INDEX_HTML = r"""<!doctype html>
   .hist-row:active { background: rgba(59, 130, 246, .12); border-color: rgba(96, 165, 250, .35); }
   .hist-title { font-size: 13px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
   .hist-time { font-size: 11.5px; color: var(--muted); flex-shrink: 0; }
-  .modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .72); backdrop-filter: blur(5px); display: none; align-items: flex-end; justify-content: center; z-index: 99; padding: 12px; }
-  .modal.open { display: flex; }
+  .modal {
+    position: fixed; inset: 0; background: rgba(3, 5, 9, .80);
+    display: flex; align-items: flex-end; justify-content: center; z-index: 99; padding: 12px;
+    opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .18s ease, visibility .18s ease;
+  }
+  .modal.open { opacity: 1; visibility: visible; pointer-events: auto; }
   @media (min-width: 560px) { .modal { align-items: center; } }
   .sheet {
     width: 100%; max-width: 520px; background: var(--card-solid); border: 1px solid rgba(255,255,255,.11);
     border-radius: 20px; padding: 10px 16px 16px; max-height: 86vh; overflow: auto;
-    box-shadow: 0 18px 48px rgba(0, 0, 0, .55); animation: sheetUp .2s ease;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, .55);
+    transform: translateY(22px); transition: transform .22s cubic-bezier(.22, 1, .36, 1);
   }
-  @keyframes sheetUp { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: translateY(0); } }
+  .modal.open .sheet { transform: translateY(0); }
   .sheet-handle { width: 36px; height: 4px; border-radius: 99px; background: rgba(255, 255, 255, .18); margin: 0 auto 12px; }
   .sheet h2 { margin: 0; font-size: 16.5px; }
   .field { margin-bottom: 12px; }
@@ -374,25 +394,34 @@ INDEX_HTML = r"""<!doctype html>
   .sw input:checked + .sw-track { background: var(--accent); }
   .sw input:checked + .sw-track::after { transform: translateX(18px); }
   .lightbox {
-    position: fixed; inset: 0; background: rgba(4, 6, 10, .95); backdrop-filter: blur(8px);
-    display: none; flex-direction: column; align-items: center; justify-content: space-between;
+    position: fixed; inset: 0; background: rgba(4, 6, 10, .96);
+    display: flex; flex-direction: column; align-items: center; justify-content: space-between;
     z-index: 120; padding: calc(12px + env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom));
+    opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .16s ease, visibility .16s ease;
   }
-  .lightbox.open { display: flex; }
-  .lb-top { width: 100%; max-width: 720px; display: flex; justify-content: space-between; align-items: center; gap: 10px; color: #fff; font-size: 14px; }
+  .lightbox.open { opacity: 1; visibility: visible; pointer-events: auto; }
+  .lb-top { width: 100%; max-width: 720px; display: flex; justify-content: space-between; align-items: center; gap: 10px; color: #fff; font-size: 14px; position: relative; z-index: 2; }
   .lb-meta { display: flex; align-items: center; gap: 8px; }
   .lb-qual { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,.10); color: #cbd5e1; }
   .lb-qual.hd { background: rgba(63, 185, 80, .18); color: #86efac; }
-  .lb-stage { flex: 1; width: 100%; display: flex; align-items: center; justify-content: center; position: relative; min-height: 0; margin: 8px 0; }
-  .lb-stage img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 10px; }
+  .lb-stage {
+    flex: 1; width: 100%; display: flex; align-items: center; justify-content: center;
+    position: relative; min-height: 0; margin: 8px 0; overflow: hidden;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  .lb-stage img {
+    max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 10px;
+    will-change: transform, opacity; transform-origin: center center;
+    -webkit-user-drag: none; user-select: none;
+  }
   .lb-nav {
     position: absolute; top: 50%; transform: translateY(-50%);
     width: 40px; height: 48px; border-radius: 12px; border: 1px solid rgba(255,255,255,.18);
-    background: rgba(15, 20, 30, .62); backdrop-filter: blur(6px); color: #fff; font-size: 22px; min-height: 40px; padding: 0;
+    background: rgba(15, 20, 30, .74); color: #fff; font-size: 22px; min-height: 40px; padding: 0; z-index: 2;
   }
   .lb-nav.prev { left: 4px; }
   .lb-nav.next { right: 4px; }
-  .lb-ft { width: 100%; max-width: 440px; display: flex; gap: 8px; }
+  .lb-ft { width: 100%; max-width: 440px; display: flex; gap: 8px; position: relative; z-index: 2; }
   .lb-pick {
     min-height: 44px; padding: 0 14px; border-radius: 12px; font-size: 13.5px; font-weight: 600;
     background: rgba(255, 255, 255, .09); border: 1px solid rgba(255, 255, 255, .2); color: #e2e8f0; flex-shrink: 0;
@@ -406,6 +435,10 @@ INDEX_HTML = r"""<!doctype html>
     box-shadow: 0 10px 26px rgba(0,0,0,.48); white-space: nowrap; max-width: 90vw; overflow: hidden; text-overflow: ellipsis;
   }
   .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  @media (prefers-reduced-motion: reduce) {
+    .card.anim, .thumb::before, .prog > i { animation: none !important; }
+    .modal, .sheet, .lightbox, .thumb img, .toast { transition: none !important; }
+  }
 </style>
 </head>
 <body>
@@ -534,10 +567,18 @@ let reconnectTimer = null;
 let currentJob = null;
 let lbImages = [];
 let lbIdx = 0;
+let lbViewToken = 0;
+let lbScale = 1;
+let lbPanX = 0;
+let lbPanY = 0;
+const lbWarmCache = new Set();
+let activeOverlay = '';
+let ignoreNextPop = false;
 let lbIsSelected = null;
 let lbTogglePick = null;
 let toastTimer = null;
 let timerId = null;
+let saveTimerId = null;
 
 function esc(s) {
   return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -758,20 +799,6 @@ async function runExtract(text) {
   }, 100);
 
   try {
-    if (!serverOnline) {
-      try {
-        await fetchJsonWithRetry('/api/heartbeat', { method: 'POST' }, 1800, 2, true);
-        markOnline();
-      } catch (hbErr) {
-        showWakeBanner(true);
-        setOnline(false, '服务未连接');
-        scheduleReconnect();
-        showErr('本地 Termux 服务未响应（可能被安卓后台冻结），请点上方「⚡ 一键唤醒 Termux 服务」后重试');
-        setHint('');
-        return;
-      }
-    }
-
     const { res: r, data: d } = await fetchJsonWithRetry('/api/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -795,7 +822,7 @@ async function runExtract(text) {
       }
     });
     const sec = ((performance.now() - t0) / 1000).toFixed(2);
-    setHint('解析完成（耗时 ' + sec + 's），预览已开启加速，保存将直接下载无损原图。');
+    setHint('解析完成（耗时 ' + sec + 's），预览已开启加速，保存将直接下载无损原画。');
     showToast('解析成功 (' + sec + 's)');
   } catch (e) {
     const msg = e && e.message ? e.message : '连接失败';
@@ -822,9 +849,94 @@ async function runExtract(text) {
   }
 }
 
+function pushOverlayHistory(name) {
+  activeOverlay = name;
+  try {
+    if (!history.state || history.state.mgOverlay !== name) {
+      history.pushState({ mgOverlay: name }, '');
+    }
+  } catch (e) {}
+}
+
+function popOverlayHistory(name) {
+  if (activeOverlay === name) activeOverlay = '';
+  try {
+    if (history.state && history.state.mgOverlay === name) {
+      ignoreNextPop = true;
+      history.back();
+    }
+  } catch (e) {}
+}
+
+function applyLbTransform(dx = 0, dy = 0, scale = lbScale, animate = false) {
+  const img = $('lbImg');
+  if (!img) return;
+  img.style.transition = animate ? 'transform .22s cubic-bezier(.22, 1, .36, 1)' : 'none';
+  if (scale <= 1 && dx === 0 && dy === 0) {
+    img.style.transform = '';
+    return;
+  }
+  const s = scale <= 1 ? Math.max(0.78, 1 - Math.abs(dy) / 1100) : scale;
+  img.style.transform = 'translate3d(' + dx.toFixed(1) + 'px,' + dy.toFixed(1) + 'px,0) scale(' + s.toFixed(3) + ')';
+}
+
+function resetLbTransform(animate = false) {
+  lbScale = 1;
+  lbPanX = 0;
+  lbPanY = 0;
+  $('lb').style.backgroundColor = '';
+  applyLbTransform(0, 0, 1, animate);
+}
+
+function swapImgDecoded(imgEl, src, onDone) {
+  const hi = new Image();
+  hi.onload = () => {
+    if (typeof hi.decode === 'function') {
+      hi.decode().catch(() => {}).finally(() => onDone(hi.src));
+    } else {
+      onDone(hi.src);
+    }
+  };
+  hi.src = src;
+}
+
+function warmLightboxNeighbors(idx) {
+  if (lbImages.length < 2) return;
+  [-1, 1].forEach(delta => {
+    const ni = (idx + delta + lbImages.length) % lbImages.length;
+    const item = lbImages[ni];
+    if (!item) return;
+    [item.thumb_url, item.preview_url].forEach(u => {
+      if (!u || lbWarmCache.has(u)) return;
+      lbWarmCache.add(u);
+      const im = new Image();
+      im.src = u;
+    });
+  });
+}
+
+function closeLightbox(fromPop = false) {
+  const lb = $('lb');
+  if (!lb.classList.contains('open')) return;
+  lbViewToken++;
+  lb.classList.remove('open');
+  lb.style.backgroundColor = '';
+  if (!fromPop) popOverlayHistory('lb');
+  else if (activeOverlay === 'lb') activeOverlay = '';
+  setTimeout(() => {
+    if (!lb.classList.contains('open')) {
+      resetLbTransform(false);
+      $('lbImg').src = '';
+    }
+  }, 180);
+}
+
 function showLightbox(idx) {
   if (!lbImages.length) return;
+  const wasOpen = $('lb').classList.contains('open');
   lbIdx = (idx + lbImages.length) % lbImages.length;
+  const tok = ++lbViewToken;
+  resetLbTransform(false);
   const im = lbImages[lbIdx];
   $('lbCount').textContent = (lbIdx + 1) + ' / ' + lbImages.length;
   $('lbDl').href = im.download_url;
@@ -844,15 +956,12 @@ function showLightbox(idx) {
   $('lbImg').src = thumb;
   if (im.preview_url && im.preview_url !== thumb) {
     if (qEl) { qEl.textContent = '高清预览 · 加载原图中'; qEl.className = 'lb-qual'; }
-    const hi = new Image();
-    const targetIdx = lbIdx;
-    hi.onload = () => {
-      if (lbIdx === targetIdx && $('lb').classList.contains('open')) {
-        $('lbImg').src = im.preview_url;
+    swapImgDecoded($('lbImg'), im.preview_url, resolvedSrc => {
+      if (tok === lbViewToken && $('lb').classList.contains('open')) {
+        $('lbImg').src = resolvedSrc;
         if (qEl) { qEl.textContent = '无损原图 ✓'; qEl.className = 'lb-qual hd'; }
       }
-    };
-    hi.src = im.preview_url;
+    });
   } else if (qEl) {
     qEl.textContent = '无损原图 ✓';
     qEl.className = 'lb-qual hd';
@@ -860,6 +969,8 @@ function showLightbox(idx) {
   $('lbPrev').style.display = lbImages.length > 1 ? '' : 'none';
   $('lbNext').style.display = lbImages.length > 1 ? '' : 'none';
   $('lb').classList.add('open');
+  if (!wasOpen) pushOverlayHistory('lb');
+  warmLightboxNeighbors(lbIdx);
 }
 
 function renderResult(d) {
@@ -870,6 +981,7 @@ function renderResult(d) {
   const images = d.assets.filter(a => a.kind === 'image');
   const lives = d.assets.filter(a => a.kind === 'live_video');
   lbImages = images;
+  lbWarmCache.clear();
   const selectedImgIds = new Set();
   const liveMap = new Map();
   lives.forEach(l => liveMap.set(l.pair_index, l));
@@ -926,10 +1038,11 @@ function renderResult(d) {
     images.forEach((im, idx) => {
       const lv = liveMap.get(im.index);
       const thumbSrc = im.thumb_url || im.preview_url;
-      const loadMode = idx < 6 ? 'eager' : 'lazy';
+      const loadMode = idx < 12 ? 'eager' : 'lazy';
+      const prioAttr = idx < 4 ? ' fetchpriority="high"' : '';
       html += '<div class="item" data-id="' + esc(im.id) + '">' +
         '<div class="thumb" data-idx="' + idx + '">' +
-        '<img loading="' + loadMode + '" decoding="async" src="' + esc(thumbSrc) + '" onload="this.classList.add(\'loaded\');this.parentElement.classList.add(\'done\')" onerror="this.classList.add(\'loaded\');this.parentElement.classList.add(\'done\',\'broken\')" alt="">' +
+        '<img loading="' + loadMode + '"' + prioAttr + ' decoding="async" src="' + esc(thumbSrc) + '" onload="this.classList.add(\'loaded\');this.parentElement.classList.add(\'done\')" onerror="this.classList.add(\'loaded\');this.parentElement.classList.add(\'done\',\'broken\')" alt="">' +
         '<div class="thumb-err"><span>预览加载失败</span><span style="font-size:11px;opacity:.75">点击重试</span></div>' +
         '<div class="tags-tl"><span class="tag">#' + (idx + 1) + '</span>' +
         (lv ? '<span class="tag live">实况</span>' : '') + '</div>' +
@@ -1093,7 +1206,14 @@ function renderResult(d) {
     const saveAllEl = $('saveAllLocalBtn');
     if (saveBtnEl) saveBtnEl.disabled = true;
     if (saveAllEl) saveAllEl.disabled = true;
-    btn.textContent = assetIds ? '正在保存已选原图…' : '正在保存全部到相册…';
+    const saveLabel = assetIds ? '正在保存已选原图… ' : '正在保存全部到相册… ';
+    const saveT0 = performance.now();
+    btn.textContent = saveLabel + '0.0s';
+    $('prog').classList.add('show');
+    clearInterval(saveTimerId);
+    saveTimerId = setInterval(() => {
+      if (saving) btn.textContent = saveLabel + ((performance.now() - saveT0) / 1000).toFixed(1) + 's';
+    }, 100);
     try {
       const reqOpts = { method: 'POST' };
       if (assetIds) {
@@ -1112,7 +1232,7 @@ function renderResult(d) {
       btn.textContent = donePrefix + ' ✓ (' + res.saved + '/' + res.total + ')';
       const other = btn === saveBtnEl ? saveAllEl : saveBtnEl;
       if (other) other.textContent = other === saveBtnEl ? defaultMainSaveText() : '保存全部';
-      setHint('已直接保存到 ' + res.dir + ' 并刷新相册。');
+      setHint('已直接保存到 ' + res.dir + ' 并触发相册刷新。');
       showToast('已存进相册 (' + res.saved + '/' + res.total + ')');
     } catch (e) {
       showErr('保存请求失败: ' + e.message);
@@ -1120,6 +1240,8 @@ function renderResult(d) {
       if (saveAllEl) { saveAllEl.disabled = false; saveAllEl.textContent = '保存全部'; }
     } finally {
       saving = false;
+      clearInterval(saveTimerId);
+      $('prog').classList.remove('show');
     }
   }
 
@@ -1141,12 +1263,12 @@ function renderResult(d) {
 
 document.addEventListener('keydown', e => {
   if (!$('lb').classList.contains('open')) return;
-  if (e.key === 'Escape') { $('lb').classList.remove('open'); $('lbImg').src = ''; }
+  if (e.key === 'Escape') closeLightbox();
   else if (e.key === 'ArrowLeft') showLightbox(lbIdx - 1);
   else if (e.key === 'ArrowRight') showLightbox(lbIdx + 1);
 });
 
-$('lbClose').addEventListener('click', () => { $('lb').classList.remove('open'); $('lbImg').src = ''; });
+$('lbClose').addEventListener('click', () => closeLightbox());
 $('lbPickBtn').addEventListener('click', e => {
   e.stopPropagation();
   if (!lbImages.length || typeof lbTogglePick !== 'function') return;
@@ -1159,14 +1281,113 @@ $('lbPickBtn').addEventListener('click', e => {
 });
 $('lbPrev').addEventListener('click', e => { e.stopPropagation(); showLightbox(lbIdx - 1); });
 $('lbNext').addEventListener('click', e => { e.stopPropagation(); showLightbox(lbIdx + 1); });
-$('lb').addEventListener('click', e => { if (e.target === $('lb') || e.target === $('lbStage')) { $('lb').classList.remove('open'); $('lbImg').src = ''; } });
-let touchX = null;
-$('lbStage').addEventListener('touchstart', e => { touchX = e.touches && e.touches[0] ? e.touches[0].clientX : null; }, { passive: true });
+
+let lbDragX = null;
+let lbDragY = null;
+let lbDragT = 0;
+let lbDragMode = '';
+let lbMovedX = 0;
+let lbMovedY = 0;
+let lbBasePanX = 0;
+let lbBasePanY = 0;
+let lbLastTapAt = 0;
+let lbLastTapX = 0;
+let lbLastTapY = 0;
+let lbJustDraggedAt = 0;
+
+$('lb').addEventListener('click', e => {
+  if (performance.now() - lbJustDraggedAt < 220) return;
+  if (e.target === $('lb') || e.target === $('lbStage')) closeLightbox();
+});
+
+$('lbStage').addEventListener('touchstart', e => {
+  if (!e.touches || e.touches.length !== 1) { lbDragX = null; return; }
+  const t = e.touches[0];
+  lbDragX = t.clientX;
+  lbDragY = t.clientY;
+  lbDragT = performance.now();
+  lbDragMode = '';
+  lbMovedX = 0;
+  lbMovedY = 0;
+  lbBasePanX = lbPanX;
+  lbBasePanY = lbPanY;
+}, { passive: true });
+
+$('lbStage').addEventListener('touchmove', e => {
+  if (lbDragX == null || !e.touches || e.touches.length !== 1) return;
+  const t = e.touches[0];
+  const dx = t.clientX - lbDragX;
+  const dy = t.clientY - lbDragY;
+  lbMovedX = dx;
+  lbMovedY = dy;
+  if (lbScale > 1) {
+    if (!lbDragMode && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) lbDragMode = 'pan';
+    if (lbDragMode === 'pan') {
+      lbPanX = Math.max(-260, Math.min(260, lbBasePanX + dx));
+      lbPanY = Math.max(-260, Math.min(260, lbBasePanY + dy));
+      applyLbTransform(lbPanX, lbPanY, lbScale, false);
+    }
+    return;
+  }
+  if (!lbDragMode && (Math.abs(dx) > 7 || Math.abs(dy) > 7)) {
+    lbDragMode = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
+  }
+  if (lbDragMode === 'h') {
+    applyLbTransform(lbImages.length > 1 ? dx : dx * 0.25, 0, 1, false);
+  } else if (lbDragMode === 'v') {
+    const effY = dy > 0 ? dy : dy * 0.25;
+    applyLbTransform(0, effY, 1, false);
+    const alpha = Math.max(0.32, 0.96 - Math.max(0, dy) / 380);
+    $('lb').style.backgroundColor = 'rgba(4,6,10,' + alpha.toFixed(2) + ')';
+  }
+}, { passive: true });
+
 $('lbStage').addEventListener('touchend', e => {
-  if (touchX == null || !e.changedTouches || !e.changedTouches[0]) return;
-  const dx = e.changedTouches[0].clientX - touchX;
-  touchX = null;
-  if (Math.abs(dx) > 45) showLightbox(dx > 0 ? lbIdx - 1 : lbIdx + 1);
+  if (lbDragX == null) return;
+  const dt = Math.max(1, performance.now() - lbDragT);
+  const moved = Math.hypot(lbMovedX, lbMovedY);
+  const mode = lbDragMode;
+  const dx = lbMovedX;
+  const dy = lbMovedY;
+  const startX = lbDragX;
+  const startY = lbDragY;
+  lbDragX = null;
+  lbDragMode = '';
+
+  if (moved > 12) lbJustDraggedAt = performance.now();
+
+  if (moved < 14 && e.target === $('lbImg')) {
+    const now = performance.now();
+    if (now - lbLastTapAt < 280 && Math.hypot(startX - lbLastTapX, startY - lbLastTapY) < 42) {
+      lbLastTapAt = 0;
+      if (lbScale > 1) {
+        resetLbTransform(true);
+      } else {
+        lbScale = 2.2;
+        lbPanX = 0;
+        lbPanY = 0;
+        applyLbTransform(0, 0, lbScale, true);
+      }
+      return;
+    }
+    lbLastTapAt = now;
+    lbLastTapX = startX;
+    lbLastTapY = startY;
+  }
+
+  if (mode === 'pan') return;
+  if (mode === 'h' && lbImages.length > 1 && (Math.abs(dx) > 54 || (Math.abs(dx) > 26 && dt < 230))) {
+    showLightbox(dx > 0 ? lbIdx - 1 : lbIdx + 1);
+    return;
+  }
+  if (mode === 'v' && (dy > 82 || (dy > 36 && dt < 220))) {
+    closeLightbox();
+    return;
+  }
+  if (mode) {
+    $('lb').style.backgroundColor = '';
+    applyLbTransform(0, 0, 1, true);
+  }
 }, { passive: true });
 
 $('goBtn').addEventListener('click', () => runExtract());
@@ -1296,12 +1517,27 @@ $('stopBtn').addEventListener('click', async () => {
 
 function openCfg() {
   refreshCfgStatus();
+  const wasOpen = $('cfgModal').classList.contains('open');
   $('cfgModal').classList.add('open');
+  if (!wasOpen) pushOverlayHistory('cfg');
 }
+function closeCfg(fromPop = false) {
+  const modal = $('cfgModal');
+  if (!modal.classList.contains('open')) return;
+  modal.classList.remove('open');
+  if (!fromPop) popOverlayHistory('cfg');
+  else if (activeOverlay === 'cfg') activeOverlay = '';
+}
+window.addEventListener('popstate', () => {
+  if (ignoreNextPop) { ignoreNextPop = false; return; }
+  if ($('lb').classList.contains('open')) { closeLightbox(true); return; }
+  if ($('cfgModal').classList.contains('open')) { closeCfg(true); return; }
+  activeOverlay = '';
+});
 window.openCfg = openCfg;
 $('cfgBtn').addEventListener('click', openCfg);
-$('cfgClose').addEventListener('click', () => $('cfgModal').classList.remove('open'));
-$('cfgModal').addEventListener('click', e => { if (e.target === $('cfgModal')) $('cfgModal').classList.remove('open'); });
+$('cfgClose').addEventListener('click', () => closeCfg());
+$('cfgModal').addEventListener('click', e => { if (e.target === $('cfgModal')) closeCfg(); });
 
 $('saveCfgBtn').addEventListener('click', async () => {
   const payload = { save_live_photo_video: $('liveChk').checked };
@@ -1311,7 +1547,7 @@ $('saveCfgBtn').addEventListener('click', async () => {
   $('xhsCk').value = '';
   $('dyCk').value = '';
   await refreshCfgStatus();
-  $('cfgModal').classList.remove('open');
+  closeCfg();
   setHint('设置已保存。');
   showToast('设置已保存');
 });
@@ -1335,7 +1571,7 @@ SW_JS_BYTES = SW_JS.encode("utf-8")
 INDEX_HTML_BYTES = INDEX_HTML.encode("utf-8")
 
 
-_MAX_THUMB_CACHE_BYTES = 512 * 1024
+_MAX_THUMB_CACHE_BYTES = 768 * 1024
 
 
 @dataclass
@@ -1599,7 +1835,7 @@ def _save_job_to_output(
                 errors.append(f"第{sa.index}项: {e}")
 
     if saved:
-        android.scan_media(saved)
+        android.scan_media(saved, wait=False)
     return saved, errors
 
 
@@ -1625,6 +1861,66 @@ def _prewarm_extractors(config_dir: Optional[Path] = None) -> None:
         pass
 
 
+def _prefetch_job_thumbs(job: StoredJob, state: "WebAppState", max_assets: int = 12) -> None:
+    """Warm lightweight thumbnails into JobStore RAM right after extract completes."""
+    targets = [sa for sa in job.assets if sa.asset.thumb_urls][:max_assets]
+    if not targets:
+        return
+    _, client = state.client()
+
+    def _warm_one(sa: StoredAsset) -> None:
+        if state.is_hibernated() or state.store.get_asset(sa.asset_id) is None:
+            return
+        if state.store.get_cached_thumb(sa) is not None:
+            return
+        owns_slot, slot_ev = state.store.acquire_thumb_slot(sa.asset_id)
+        if not owns_slot:
+            return
+        try:
+            if state.store.get_cached_thumb(sa) is not None:
+                return
+            stream = client.open_media_candidates(
+                state.store.thumb_urls_for(sa),
+                default_ext=sa.asset.default_ext,
+                expected_prefix="image",
+                headers=sa.asset.headers,
+                mobile=sa.asset.mobile,
+            )
+            try:
+                state.store.remember_winning(sa, stream.winning_url, stream.ext, is_thumb=True)
+                try:
+                    cl_val = int(stream.content_length) if stream.content_length else 0
+                except ValueError:
+                    cl_val = 0
+                if cl_val > _MAX_THUMB_CACHE_BYTES or len(stream.first_chunk) > _MAX_THUMB_CACHE_BYTES:
+                    return
+                buf = bytearray(stream.first_chunk)
+                while True:
+                    chunk = stream.resp.read(65536)
+                    if not chunk:
+                        break
+                    if len(buf) + len(chunk) > _MAX_THUMB_CACHE_BYTES:
+                        return
+                    buf.extend(chunk)
+                if buf:
+                    state.store.cache_thumb(sa, bytes(buf), stream.content_type, stream.ext)
+            finally:
+                stream.close()
+        except Exception:
+            pass
+        finally:
+            state.store.release_thumb_slot(sa.asset_id, slot_ev)
+
+    workers = min(4, len(targets))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [pool.submit(_warm_one, sa) for sa in targets]
+        for fut in as_completed(futs):
+            try:
+                fut.result()
+            except Exception:
+                pass
+
+
 class WebAppState:
     """Shared server state holding job registry, config path, and activity lifecycle."""
 
@@ -1634,11 +1930,13 @@ class WebAppState:
         can_shutdown: bool = False,
         hibernate_only: bool = False,
         prewarm_on_wake: bool = False,
+        prefetch_thumbs: bool = False,
     ):
         self.config_dir = config_dir
         self.can_shutdown = can_shutdown
         self.hibernate_only = hibernate_only
         self.prewarm_on_wake = prewarm_on_wake
+        self.prefetch_thumbs = prefetch_thumbs
         self.hibernated = False
         self.store = JobStore()
         self._lock = threading.Lock()
@@ -1878,6 +2176,8 @@ def make_handler(state: WebAppState):
                     return
 
                 job = state.store.put_result(result)
+                if state.prefetch_thumbs and any(sa.asset.thumb_urls for sa in job.assets):
+                    threading.Thread(target=_prefetch_job_thumbs, args=(job, state), daemon=True).start()
                 self._send_json(
                     HTTPStatus.OK,
                     {
@@ -2154,7 +2454,12 @@ def serve(
 ) -> None:
     """Start the local web UI server."""
     can_stop = allow_shutdown or idle_timeout > 0 or host == "127.0.0.1"
-    state = WebAppState(can_shutdown=can_stop, hibernate_only=hibernate_on_idle, prewarm_on_wake=True)
+    state = WebAppState(
+        can_shutdown=can_stop,
+        hibernate_only=hibernate_on_idle,
+        prewarm_on_wake=True,
+        prefetch_thumbs=True,
+    )
     srv = ReusableThreadingHTTPServer((host, port), make_handler(state))
     state.server = srv
     android.wake_lock()

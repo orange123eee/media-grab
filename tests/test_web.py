@@ -286,6 +286,15 @@ class WebServerTests(unittest.TestCase):
         self.assertIn("lbPickBtn", idx_html)
         self.assertIn("saveAllLocalBtn", idx_html)
         self.assertIn("copyTitleBtn", idx_html)
+        self.assertIn('fetchpriority="high"', idx_html)
+        self.assertIn("skelSweep", idx_html)
+        self.assertIn("contain: layout style paint", idx_html)
+        self.assertIn("touch-action: none", idx_html)
+        self.assertIn("warmLightboxNeighbors", idx_html)
+        self.assertIn("swapImgDecoded", idx_html)
+        self.assertIn("pushOverlayHistory", idx_html)
+        self.assertIn("popstate", idx_html)
+        self.assertIn("touch-action: manipulation", idx_html)
 
         _, _, sw_raw = self._req("/sw.js")
         sw_text = sw_raw.decode("utf-8")
@@ -492,6 +501,79 @@ class WebServerTests(unittest.TestCase):
         )
         cands = self.state.store.candidate_urls_for(job2.assets[0])
         self.assertEqual(cands[0], "https://hi-cdn.example/orig2.png")
+
+    def test_background_thumb_prefetch_and_nonblocking_media_scan(self):
+        self.state.prefetch_thumbs = True
+        fake_result = ExtractResult(
+            platform="xiaohongshu",
+            item_id="pref77",
+            title="预热图集",
+            author="u",
+            assets=[
+                MediaAsset(
+                    kind="image",
+                    urls=[f"https://orig.example/{i}.png"],
+                    default_ext=".png",
+                    thumb_urls=[f"https://th.example/{i}.webp"],
+                )
+                for i in (1, 2, 3)
+            ],
+        )
+        webp_map = {f"https://th.example/{i}.webp": b"RIFF1234WEBP" + bytes([64 + i]) * 1024 for i in (1, 2, 3)}
+        opened = []
+        opened_lock = threading.Lock()
+
+        class FakeOpener:
+            def open(self, req, timeout=10):
+                u = req.full_url
+                with opened_lock:
+                    opened.append(u)
+                return _FakeRawResp("image/webp", webp_map[u])
+
+        with (
+            patch("media_grab.web.extract", return_value=fake_result),
+            patch("urllib.request.build_opener", return_value=FakeOpener()),
+        ):
+            st, _, raw = self._req("/api/extract", method="POST", body={"input": "https://xhslink.cn/o/pref77"})
+            self.assertEqual(st, 200)
+            data = json.loads(raw.decode("utf-8"))
+            job = self.state.store.get_job(data["job_id"])
+            self.assertIsNotNone(job)
+
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                if all(self.state.store.get_cached_thumb(sa) is not None for sa in job.assets):
+                    break
+                time.sleep(0.02)
+
+            self.assertTrue(all(self.state.store.get_cached_thumb(sa) is not None for sa in job.assets))
+            opened.clear()
+
+            for i, asset in enumerate(data["assets"], start=1):
+                tst, _, tbody = self._req(asset["thumb_url"])
+                self.assertEqual(tst, 200)
+                self.assertEqual(tbody, webp_map[f"https://th.example/{i}.webp"])
+            self.assertEqual(opened, [])
+
+        # Non-blocking scan_media(wait=False) spawns daemon thread cleanly without blocking save response.
+        from media_grab import android
+
+        img_file = self.cfg_dir / "saved_demo.jpg"
+        img_file.write_bytes(b"\xff\xd8\xff\xe0" + b"X" * 128)
+        done_ev = threading.Event()
+        seen_cmds = []
+
+        def fake_subproc_run(cmd, **kwargs):
+            seen_cmds.append(list(cmd))
+            done_ev.set()
+
+        with (
+            patch("media_grab.android.has_cmd", return_value=True),
+            patch("media_grab.android.subprocess.run", side_effect=fake_subproc_run),
+        ):
+            android.scan_media([img_file], wait=False)
+            self.assertTrue(done_ev.wait(timeout=2.0))
+        self.assertEqual(seen_cmds, [["termux-media-scan", str(img_file)]])
 
 
 class OnDemandGateTests(unittest.TestCase):

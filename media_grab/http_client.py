@@ -276,7 +276,7 @@ class ConnectionPool:
 
 
 _DEFAULT_SSL_CTX = ssl.create_default_context()
-_DEFAULT_POOL = ConnectionPool()
+_DEFAULT_POOL = ConnectionPool(max_per_key=8, max_total=32, idle_ttl=45.0)
 
 
 def close_idle_connections() -> None:
