@@ -40,6 +40,7 @@ class UtilsTests(unittest.TestCase):
         self.assertEqual(detect_platform("https://v.douyin.com/abc/"), "douyin")
         self.assertEqual(detect_platform("https://www.iesdouyin.com/share/video/123/"), "douyin")
         self.assertEqual(detect_platform("http://xhslink.com/a/xyz"), "xiaohongshu")
+        self.assertEqual(detect_platform("https://xhslink.cn/o/1ZBQIcZPzoN"), "xiaohongshu")
         self.assertEqual(detect_platform("https://www.xiaohongshu.com/explore/123"), "xiaohongshu")
         self.assertEqual(detect_platform("https://x.com/user/status/1"), "x")
         self.assertIsNone(detect_platform("https://example.com/1"))
@@ -232,6 +233,36 @@ class XiaohongshuExtractorTests(unittest.TestCase):
             "https://sns-img-hw.xhscdn.com/1040g00830t2hgqelk4005o49b2u097vri7c1ij8?imageView2/2/w/format/png",
         )
         self.assertEqual(res.assets[1].urls[0], "https://sns-video-bd.xhscdn.com/live.mp4")
+
+        # Newer XHS schema: traceId is empty, key is in fileId and urlDefault has timestamp+md5 prefix.
+        signed_state = {
+            "note": {
+                "noteDetailMap": {
+                    "6ae88286": {
+                        "note": {
+                            "noteId": "6ae88286",
+                            "type": "normal",
+                            "title": "新版原图测试",
+                            "imageList": [
+                                {
+                                    "traceId": "",
+                                    "fileId": "1040g2sg3272o559176hg5pvasid1i1niileucv8",
+                                    "urlDefault": "http://sns-webpic-qc.xhscdn.com/202611151726/0d1593714808ab35a7e1f1ca309afc31/1040g2sg3272o559176hg5pvasid1i1niileucv8!nd_dft_wgth_jpg_3",
+                                }
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+        res_signed = parse_xhs_state(signed_state, "6ae88286", Config())
+        signed_urls = res_signed.assets[0].urls
+        self.assertEqual(
+            signed_urls[0],
+            "https://sns-img-hw.xhscdn.com/1040g2sg3272o559176hg5pvasid1i1niileucv8?imageView2/2/w/format/png",
+        )
+        self.assertFalse(any("0d1593714808ab35a7e1f1ca309afc31" in u and "sns-img-hw" in u for u in signed_urls))
+        self.assertFalse(any("sns-webpic-qc.xhscdn.com" in u and "!nd_" not in u for u in signed_urls))
 
     def test_parse_xhs_video_picks_highest_resolution_and_skips_cover_image(self):
         state = {

@@ -96,7 +96,7 @@ class HttpClient:
         if host.endswith("douyin.com") or host.endswith("iesdouyin.com"):
             if self.config.douyin_cookie:
                 return self.config.douyin_cookie
-        if host.endswith("xiaohongshu.com") or host.endswith("xhslink.com"):
+        if host.endswith("xiaohongshu.com") or host.endswith("xhslink.com") or host.endswith("xhslink.cn"):
             if self.config.xhs_cookie:
                 return self.config.xhs_cookie
 

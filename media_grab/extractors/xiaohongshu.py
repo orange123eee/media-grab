@@ -75,11 +75,15 @@ def _collect_stream_urls(stream_dict: Dict[str, Any]) -> List[str]:
     return dedupe_keep_order(merged)
 
 
+_SIGNED_PREFIX_RE = re.compile(r"^(?:\d{10,14}/[0-9a-fA-F]{16,64}/|\d{4}/)")
+
+
 def _extract_image_token(url: str) -> str:
     """Extract clean path/trace token before '!' or query params when not under /spectrum/."""
     path = urlparse(normalize_http_url(url)).path.lstrip("/")
     if not path or "spectrum/" in path:
         return ""
+    path = _SIGNED_PREFIX_RE.sub("", path)
     return path.split("!", 1)[0]
 
 
@@ -102,7 +106,7 @@ def _build_image_candidates(img: Dict[str, Any]) -> List[str]:
             raw_urls.append(normalize_http_url(img[key]))
 
     candidates: List[str] = []
-    trace_id = str(img.get("traceId") or "").strip()
+    trace_id = str(img.get("fileId") or img.get("traceId") or "").strip()
     if trace_id:
         candidates.append(f"https://sns-img-hw.xhscdn.com/{trace_id}?imageView2/2/w/format/png")
         candidates.append(f"https://ci.xiaohongshu.com/{trace_id}?imageView2/2/w/format/png")
@@ -113,11 +117,13 @@ def _build_image_candidates(img: Dict[str, Any]) -> List[str]:
         if token:
             candidates.append(f"https://sns-img-hw.xhscdn.com/{token}?imageView2/2/w/format/png")
             candidates.append(f"https://ci.xiaohongshu.com/{token}?imageView2/2/w/format/png")
-        # Try removing watermark suffix (!nd_dft_wlteh_...) if present
+        # Try removing watermark suffix (!nd_dft_wlteh_...) when path has no signed timestamp prefix
         if "!" in u:
-            base = u.split("!", 1)[0].split("?", 1)[0]
-            if "/spectrum/" not in base:
-                candidates.append(f"{base}?imageView2/2/w/format/png")
+            u_path = urlparse(u).path.lstrip("/")
+            if not _SIGNED_PREFIX_RE.match(u_path):
+                base = u.split("!", 1)[0].split("?", 1)[0]
+                if "/spectrum/" not in base:
+                    candidates.append(f"{base}?imageView2/2/w/format/png")
 
     candidates.extend(raw_urls)
     return dedupe_keep_order(candidates)
