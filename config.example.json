@@ -1,0 +1,8 @@
+{
+  "output_dir": "~/storage/shared/DCIM/MediaGrab",
+  "timeout": 25,
+  "max_workers": 4,
+  "save_live_photo_video": true,
+  "douyin_cookie": "",
+  "xhs_cookie": ""
+}

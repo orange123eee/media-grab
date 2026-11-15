@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.part
+cookies.txt
+douyin_cookies.txt
+xhs_cookies.txt
+config.json

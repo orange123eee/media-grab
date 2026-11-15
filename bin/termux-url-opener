@@ -1,0 +1,21 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+
+APP_DIR="$HOME/.local/share/media-grab"
+export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+INPUT="${1:-}"
+if [ -z "$INPUT" ]; then
+  python3 -m media_grab.cli --clipboard
+else
+  python3 -m media_grab.cli "$INPUT"
+fi
+STATUS=$?
+
+if [ "$STATUS" -ne 0 ]; then
+  echo ""
+  read -r -p "提取未成功，按回车关闭窗口..."
+else
+  sleep 1.5
+fi
+exit "$STATUS"
