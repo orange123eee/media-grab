@@ -47,19 +47,28 @@ MANIFEST_JSON = json.dumps(
     ensure_ascii=False,
 )
 
-SW_JS = """const CACHE_NAME = 'media-grab-shell-v3';
+SW_JS = """const CACHE_NAME = 'media-grab-shell-v4';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg'];
+const SW_OFFLINE_HTML = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="background:#0b0e14;color:#eef2f8;font-family:sans-serif;padding:24px;line-height:1.6"><h3>本地 Termux 服务被系统暂停</h3><p style="color:#9aa7bd">正在自动检测并恢复连接；若 3 秒后仍未跳转，请点下方按钮唤起 Termux 后切回本页（建议在系统设置将 Termux 省电策略设为「无限制」）：</p><p><a href="intent://#Intent;package=com.termux;end" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;border-radius:10px;text-decoration:none">⚡ 一键唤醒 Termux 服务</a> <button onclick="location.replace(\\'/\\')" style="padding:12px 16px;background:#1e2636;color:#eef2f8;border:1px solid #334155;border-radius:10px;margin-left:8px">立即刷新</button></p><script>function p(){fetch("/api/config",{cache:"no-store"}).then(function(r){if(r.ok)location.replace("/")}).catch(function(){})}p();setInterval(p,1200);document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible")p()})</script></body>';
 
-function fetchWithTimeout(req, ms) {
+function fetchWithTimeout(reqOrUrl, ms) {
   const ctrl = new AbortController();
   const tid = setTimeout(() => ctrl.abort(), ms);
-  return fetch(req, { signal: ctrl.signal, cache: 'no-store' }).finally(() => clearTimeout(tid));
+  const target = typeof reqOrUrl === 'string' ? reqOrUrl : reqOrUrl.url;
+  return fetch(target, { signal: ctrl.signal, cache: 'no-store', credentials: 'same-origin' })
+    .finally(() => clearTimeout(tid));
 }
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_URLS)).catch(() => {})
+    caches.open(CACHE_NAME)
+      .then((cache) => Promise.all(
+        SHELL_URLS.map((u) => fetch(u, { cache: 'no-store', credentials: 'same-origin' })
+          .then((res) => (res && res.ok ? cache.put(u, res) : null))
+          .catch(() => null))
+      ))
+      .catch(() => {})
   );
 });
 
@@ -79,27 +88,31 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api/')) return;
 
-  if (req.mode === 'navigate' || url.pathname === '/') {
+  if (req.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html') {
     event.respondWith(
-      fetchWithTimeout(req, 450)
-        .then((res) => {
-          if (res && res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE_NAME).then((c) => c.put('/', copy)).catch(() => {});
-          }
-          return res;
-        })
-        .catch(() => caches.match('/').then((cached) => cached || new Response(
-          '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="background:#0b0e14;color:#eef2f8;font-family:sans-serif;padding:24px"><h3>本地 Termux 服务被系统暂停</h3><p>点下方按钮唤起 Termux 后刷新本页即可：</p><p><a href="intent://#Intent;package=com.termux;end" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;border-radius:10px;text-decoration:none">⚡ 一键唤醒 Termux 服务</a></p></body>',
-          { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
-        )))
+      caches.match('/').then((cached) => {
+        const timeoutMs = cached ? 850 : 2500;
+        return fetchWithTimeout('/', timeoutMs)
+          .then((res) => {
+            if (res && res.ok) {
+              const copy = res.clone();
+              caches.open(CACHE_NAME).then((c) => c.put('/', copy)).catch(() => {});
+              return res;
+            }
+            return cached || res;
+          })
+          .catch(() => cached || new Response(
+            SW_OFFLINE_HTML,
+            { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } }
+          ));
+      })
     );
     return;
   }
 
   if (url.pathname === '/manifest.json' || url.pathname === '/icon.svg') {
     event.respondWith(
-      fetchWithTimeout(req, 450)
+      fetchWithTimeout(url.pathname, 850)
         .then((res) => {
           if (res && res.ok) {
             const copy = res.clone();
@@ -316,7 +329,7 @@ INDEX_HTML = r"""<!doctype html>
 
   <div class="card" id="wakeBox" style="display:none;border-color:rgba(248,81,73,.45)">
     <div style="font-weight:600;margin-bottom:4px">本地解析网关尚未连接</div>
-    <div class="sub" style="margin-bottom:10px;display:block">如果手机刚重启或还没有打开过 Termux，点下方按钮唤起 Termux 后切回本页即可自动恢复连接。</div>
+    <div class="sub" style="margin-bottom:10px;display:block">如果手机刚重启、尚未启动 Termux 或后台被系统冻结，点下方按钮唤起 Termux 后切回本页即可自动恢复（若切换后仍常断开，请在系统设置把 Termux 设为「允许后台运行 / 省电无限制」）。</div>
     <div class="row" style="margin-top:0">
       <a class="btn pri" href="intent://#Intent;package=com.termux;end">⚡ 一键唤醒 Termux 服务</a>
       <button type="button" id="retryConnBtn">重试连接</button>
@@ -400,6 +413,9 @@ const $ = id => document.getElementById(id);
 const HIST_KEY = 'mg_history_v1';
 let busy = false;
 let serverOnline = false;
+let connEpoch = 0;
+let lastOkAt = 0;
+let reconnectTimer = null;
 let currentJob = null;
 let lbImages = [];
 let lbIdx = 0;
@@ -427,6 +443,30 @@ function setOnline(ok, txt) {
 function showWakeBanner(show) {
   const box = $('wakeBox');
   if (box) box.style.display = show ? 'block' : 'none';
+}
+
+function stopReconnect() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function markOnline() {
+  lastOkAt = performance.now();
+  stopReconnect();
+  showWakeBanner(false);
+  setOnline(true, '按需服务就绪 · 关页自动停止');
+}
+
+function scheduleReconnect(delayMs = 1200) {
+  if (reconnectTimer || serverOnline || document.visibilityState !== 'visible') return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (!serverOnline && document.visibilityState === 'visible') {
+      refreshCfgStatus(true);
+    }
+  }, delayMs);
 }
 
 function showErr(msg) {
@@ -488,22 +528,25 @@ $('trimUrlBtn').addEventListener('click', () => {
   if (u) { $('inp').value = u; updateDetectBar(); showToast('已精简为纯链接'); }
 });
 
-async function fetchJsonWithRetry(url, options, timeoutMs = 22000, retries = 1) {
+async function fetchJsonWithRetry(url, options, timeoutMs = 22000, retries = 1, retryOnAbort = false) {
   let lastErr = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
     const ctrl = new AbortController();
     const tid = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const r = await fetch(url, Object.assign({}, options || {}, { signal: ctrl.signal }));
+      const r = await fetch(url, Object.assign({ cache: 'no-store' }, options || {}, { signal: ctrl.signal }));
       const data = await r.json();
       return { res: r, data };
     } catch (e) {
       lastErr = e;
       if (e && e.name === 'AbortError') {
-        throw new Error('请求超时（超过 ' + Math.round(timeoutMs / 1000) + ' 秒），请检查网络或 Cookie');
+        lastErr = new Error('请求超时（超过 ' + Math.round(timeoutMs / 1000) + ' 秒），请检查网络或 Cookie');
+        if (!retryOnAbort || attempt >= retries) {
+          throw lastErr;
+        }
       }
       if (attempt < retries) {
-        await new Promise(resolve => setTimeout(resolve, 250));
+        await new Promise(resolve => setTimeout(resolve, retryOnAbort ? 140 : 250));
       }
     } finally {
       clearTimeout(tid);
@@ -579,12 +622,12 @@ async function runExtract(text) {
   try {
     if (!serverOnline) {
       try {
-        await fetchJsonWithRetry('/api/heartbeat', { method: 'POST' }, 1500, 0);
-        showWakeBanner(false);
-        setOnline(true, '按需服务就绪 · 关页自动停止');
+        await fetchJsonWithRetry('/api/heartbeat', { method: 'POST' }, 1600, 1, true);
+        markOnline();
       } catch (hbErr) {
         showWakeBanner(true);
         setOnline(false, '服务未连接');
+        scheduleReconnect();
         showErr('本地 Termux 服务未响应（可能被安卓后台冻结），请点上方「⚡ 一键唤醒 Termux 服务」后重试');
         setHint('');
         return;
@@ -603,8 +646,7 @@ async function runExtract(text) {
       return;
     }
     currentJob = d;
-    showWakeBanner(false);
-    setOnline(true, '按需服务就绪 · 关页自动停止');
+    markOnline();
     const found = clientExtractUrl(val);
     saveHistory(d, (found && found.url) || val);
     renderResult(d);
@@ -615,13 +657,15 @@ async function runExtract(text) {
     const msg = e && e.message ? e.message : '连接失败';
     let alive = true;
     try {
-      await fetchJsonWithRetry('/api/heartbeat', { method: 'POST' }, 1000, 0);
+      await fetchJsonWithRetry('/api/heartbeat', { method: 'POST' }, 1200, 1, true);
+      markOnline();
     } catch (_) {
       alive = false;
     }
     if (!alive || !/超时/.test(msg)) {
       showWakeBanner(true);
       setOnline(false, '服务未连接');
+      scheduleReconnect();
     }
     showErr('提取失败: ' + msg);
     setHint('');
@@ -785,62 +829,93 @@ $('pasteBtn').addEventListener('click', async () => {
   setHint('当前浏览器限制网页自动读剪贴板：请长按输入框点「粘贴」，粘贴后会自动开始提取。');
 });
 
+let manualStopped = false;
+
 async function refreshCfgStatus(fast = false) {
+  const ep = ++connEpoch;
+  const startOkAt = lastOkAt;
   try {
-    const { res: r, data: c } = await fetchJsonWithRetry('/api/config', {}, fast ? 1200 : 3500, 0);
-    if (!r.ok) return;
+    const { res: r, data: c } = await fetchJsonWithRetry(
+      '/api/config',
+      {},
+      fast ? 1600 : 3500,
+      fast ? 2 : 1,
+      true
+    );
+    if (!r.ok) return false;
     $('xhsSt').textContent = c.xhs_cookie_set ? '已配置' : '未配置';
     $('xhsSt').className = c.xhs_cookie_set ? '' : 'off';
     $('dySt').textContent = c.douyin_cookie_set ? '已配置' : '未配置';
     $('dySt').className = c.douyin_cookie_set ? '' : 'off';
     $('liveChk').checked = !!c.save_live_photo_video;
     $('stopBtn').style.display = c.can_shutdown ? '' : 'none';
-    showWakeBanner(false);
-    setOnline(true, '按需服务就绪 · 关页自动停止');
+    manualStopped = false;
+    markOnline();
+    return true;
   } catch (e) {
-    showWakeBanner(true);
-    setOnline(false, '网关未连接 · 请点击唤醒');
+    if (ep === connEpoch && lastOkAt === startOkAt && !manualStopped) {
+      showWakeBanner(true);
+      setOnline(false, '网关未连接 · 请点击唤醒');
+      scheduleReconnect();
+    }
+    return false;
   }
 }
 
 refreshCfgStatus(true);
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  navigator.serviceWorker.register('/sw.js').then((reg) => {
+    try { reg.update(); } catch (e) {}
+  }).catch(() => {});
 }
 
 function sendHeartbeat() {
-  fetch('/api/heartbeat', { method: 'POST', keepalive: true })
-    .then(r => { if (r.ok) { showWakeBanner(false); setOnline(true, '按需服务就绪 · 关页自动停止'); } })
+  fetch('/api/heartbeat', { method: 'POST', keepalive: true, cache: 'no-store' })
+    .then(r => { if (r.ok) { manualStopped = false; markOnline(); } })
     .catch(() => {});
 }
 
 setInterval(() => {
-  if (document.visibilityState === 'visible') sendHeartbeat();
+  if (document.visibilityState === 'visible' && !manualStopped) sendHeartbeat();
 }, 20000);
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
+    stopReconnect();
     if (navigator.sendBeacon) navigator.sendBeacon('/api/leave?mode=hidden', '');
   } else {
+    manualStopped = false;
+    refreshCfgStatus(true);
+    sendHeartbeat();
+  }
+});
+
+window.addEventListener('pageshow', (e) => {
+  if (e && e.persisted) {
+    manualStopped = false;
     refreshCfgStatus(true);
     sendHeartbeat();
   }
 });
 
 window.addEventListener('pagehide', () => {
+  stopReconnect();
   if (navigator.sendBeacon) navigator.sendBeacon('/api/leave?mode=close', '');
 });
 
 if ($('retryConnBtn')) {
   $('retryConnBtn').addEventListener('click', () => {
+    manualStopped = false;
     refreshCfgStatus();
     sendHeartbeat();
   });
 }
 
 $('stopBtn').addEventListener('click', async () => {
-  try { await fetch('/api/shutdown', { method: 'POST' }); } catch (e) {}
+  manualStopped = true;
+  stopReconnect();
+  try { await fetch('/api/shutdown', { method: 'POST', cache: 'no-store' }); } catch (e) {}
   setOnline(false, '服务已休眠 · 刷新即醒');
   setHint('本次解析服务已关闭；下次打开或刷新网页会自动唤醒。');
   $('stopBtn').style.display = 'none';
@@ -1140,7 +1215,13 @@ def make_handler(state: WebAppState):
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
-        timeout = 15
+        timeout = 65
+
+        def handle(self) -> None:
+            try:
+                super().handle()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError, OSError):
+                return
 
         def log_message(self, format: str, *args: Any) -> None:
             return
@@ -1458,6 +1539,7 @@ def _guess_lan_ips() -> Tuple[Optional[str], List[str]]:
 class ReusableThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
     daemon_threads = True
+    request_queue_size = 64
 
 
 def serve(

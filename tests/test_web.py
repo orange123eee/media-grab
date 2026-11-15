@@ -255,6 +255,36 @@ class WebServerTests(unittest.TestCase):
         self.assertEqual(st_idx, 200)
         self.assertFalse(self.state.is_hibernated())
 
+    def test_reload_resilience_and_start_web_script(self):
+        # Simulate aborted client sockets (e.g. page reload / SW timeout) before normal /api/config.
+        with socket.create_connection(("127.0.0.1", self.port), timeout=2) as raw_sock:
+            raw_sock.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            raw_sock.recv(128)
+        with socket.create_connection(("127.0.0.1", self.port), timeout=2):
+            pass
+
+        st, _, raw = self._req("/api/config")
+        self.assertEqual(st, 200)
+        self.assertIn("xhs_cookie_set", json.loads(raw.decode("utf-8")))
+
+        _, _, idx_raw = self._req("/")
+        idx_html = idx_raw.decode("utf-8")
+        self.assertIn("scheduleReconnect", idx_html)
+        self.assertIn("pageshow", idx_html)
+        self.assertIn("cache: 'no-store'", idx_html)
+
+        _, _, sw_raw = self._req("/sw.js")
+        sw_text = sw_raw.decode("utf-8")
+        self.assertIn("SW_OFFLINE_HTML", sw_text)
+        self.assertNotIn("fetch(req,", sw_text)
+
+        start_sh = Path(__file__).resolve().parent.parent / "bin" / "start-web.sh"
+        sh_bytes = start_sh.read_bytes()
+        self.assertNotIn(b"\r\n", sh_bytes)
+        sh_text = sh_bytes.decode("utf-8")
+        self.assertNotIn(r"media_grab\.\(", sh_text)
+        self.assertIn("stop_existing", sh_text)
+
 
 class OnDemandGateTests(unittest.TestCase):
     def test_gate_spawns_on_demand_and_proxies(self):
