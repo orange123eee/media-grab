@@ -139,29 +139,34 @@ INDEX_HTML = r"""<!doctype html>
 <style>
   :root {
     color-scheme: dark;
-    --bg: #070a10;
+    --bg: #06090f;
     --card: rgba(19, 24, 34, 0.9);
-    --card-solid: #141923;
-    --line: rgba(255, 255, 255, 0.085);
-    --line-hi: rgba(96, 165, 250, 0.52);
-    --text: #eef2f8;
-    --muted: #8b96aa;
+    --card-solid: #131823;
+    --line: rgba(255, 255, 255, 0.088);
+    --line-hi: rgba(96, 165, 250, 0.56);
+    --text: #f1f5fb;
+    --muted: #8b97ad;
     --accent: #3b82f6;
     --accent-hi: #2563eb;
     --accent-soft: rgba(59, 130, 246, 0.16);
+    --plat-glow: rgba(59, 130, 246, 0.20);
+    --plat-ring: rgba(59, 130, 246, 0.22);
     --ok: #3fb950;
     --ok-soft: rgba(63, 185, 80, 0.14);
     --warn: #e3b341;
     --err: #f85149;
   }
+  body[data-plat="dy"] { --plat-glow: rgba(37, 244, 238, 0.22); --plat-ring: rgba(37, 244, 238, 0.28); }
+  body[data-plat="xhs"] { --plat-glow: rgba(255, 45, 85, 0.22); --plat-ring: rgba(255, 92, 122, 0.28); }
+  body[data-plat="x"] { --plat-glow: rgba(203, 213, 225, 0.18); --plat-ring: rgba(226, 232, 240, 0.24); }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { overscroll-behavior-y: contain; }
   body {
     margin: 0;
-    padding: calc(14px + env(safe-area-inset-top)) 13px calc(76px + env(safe-area-inset-bottom));
+    padding: calc(14px + env(safe-area-inset-top)) 13px calc(92px + env(safe-area-inset-bottom));
     background:
-      radial-gradient(620px 300px at 12% -8%, rgba(59, 130, 246, .20), transparent 64%),
-      radial-gradient(520px 260px at 92% 4%, rgba(255, 36, 66, .13), transparent 64%),
+      radial-gradient(640px 320px at 12% -6%, var(--plat-glow), transparent 64%),
+      radial-gradient(540px 270px at 94% 5%, rgba(255, 36, 66, .12), transparent 64%),
       radial-gradient(460px 240px at 52% 105%, rgba(6, 182, 212, .08), transparent 65%),
       var(--bg);
     color: var(--text);
@@ -173,54 +178,63 @@ INDEX_HTML = r"""<!doctype html>
   .hd { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; padding: 2px 2px 0; }
   .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
   .logo {
-    width: 40px; height: 40px; border-radius: 13px; flex-shrink: 0;
-    background: linear-gradient(135deg, #2563eb, #06b6d4);
+    width: 42px; height: 42px; border-radius: 14px; flex-shrink: 0;
+    background: linear-gradient(135deg, #3b82f6, #06b6d4);
     display: flex; align-items: center; justify-content: center;
-    box-shadow: 0 8px 20px rgba(37, 99, 235, .34), inset 0 1px 0 rgba(255, 255, 255, .28);
+    box-shadow: 0 10px 24px -4px rgba(37, 99, 235, .44), inset 0 1px 0 rgba(255, 255, 255, .36);
   }
   .logo svg { width: 22px; height: 22px; }
-  h1 { font-size: 19px; font-weight: 700; margin: 0; letter-spacing: .2px; line-height: 1.25; }
-  .sub { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; margin-top: 2px; }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; flex-shrink: 0; transition: background .2s, box-shadow .2s; }
+  h1 { font-size: 19px; font-weight: 700; margin: 0; letter-spacing: .25px; line-height: 1.25; }
+  .sub { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 7px; margin-top: 2px; }
+  .dot { position: relative; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; flex-shrink: 0; transition: background .2s, box-shadow .2s; }
   .dot.on { background: var(--ok); box-shadow: 0 0 8px rgba(63, 185, 80, .75); }
+  .dot.on::after {
+    content: ""; position: absolute; inset: -3px; border-radius: 50%;
+    border: 1.5px solid rgba(63, 185, 80, .55);
+    animation: dotPulse 2.2s ease-out infinite;
+  }
+  @keyframes dotPulse { 0% { transform: scale(.85); opacity: .75; } 100% { transform: scale(1.75); opacity: 0; } }
   .dot.off { background: var(--err); box-shadow: 0 0 8px rgba(248, 81, 73, .55); }
-  .hd-acts { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+  .hd-acts { display: flex; gap: 7px; align-items: center; flex-shrink: 0; }
   .pill {
-    border: 1px solid var(--line); background: rgba(255, 255, 255, .04); color: var(--text);
+    display: inline-flex; align-items: center; gap: 5px; touch-action: manipulation;
+    border: 1px solid var(--line); background: rgba(255, 255, 255, .05); color: var(--text);
     border-radius: 999px; padding: 7px 12px; font-size: 12.5px; font-weight: 500;
-    cursor: pointer; white-space: nowrap; min-height: 34px; transition: background .15s, border-color .15s;
+    cursor: pointer; white-space: nowrap; min-height: 34px;
+    transition: transform .1s ease, background .15s, border-color .15s;
   }
-  .pill:active { opacity: .82; background: rgba(255, 255, 255, .08); }
+  .pill svg { width: 13px; height: 13px; opacity: .88; flex-shrink: 0; }
+  .pill:active { transform: scale(.96); opacity: .88; background: rgba(255, 255, 255, .1); }
   .card {
-    background: linear-gradient(180deg, rgba(21, 27, 39, .97), rgba(15, 19, 28, .97));
-    border: 1px solid var(--line); border-radius: 18px;
-    padding: 14px; margin-bottom: 13px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .04);
+    background: linear-gradient(180deg, rgba(22, 28, 41, .97), rgba(14, 18, 27, .97));
+    border: 1px solid var(--line); border-radius: 19px;
+    padding: 15px; margin-bottom: 13px;
+    box-shadow: 0 14px 34px -8px rgba(0, 0, 0, .46), inset 0 1px 0 rgba(255, 255, 255, .07);
   }
-  .card.anim { animation: cardIn .22s cubic-bezier(.22, .68, 0, 1); }
-  @keyframes cardIn { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
+  .card.anim { animation: cardIn .24s cubic-bezier(.22, .68, 0, 1); }
+  @keyframes cardIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
   .plats { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
   .pchip {
-    font-size: 11.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
-    background: rgba(255, 255, 255, .05); border: 1px solid rgba(255, 255, 255, .08);
-    color: var(--muted); transition: all .18s ease;
+    font-size: 11.5px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+    background: rgba(255, 255, 255, .045); border: 1px solid rgba(255, 255, 255, .085);
+    color: var(--muted); transition: transform .18s ease, background .18s ease, border-color .18s ease, color .18s ease;
   }
-  .pchip.act-dy { background: rgba(37, 244, 238, .15); border-color: rgba(37, 244, 238, .42); color: #7af5f0; }
-  .pchip.act-xhs { background: rgba(255, 36, 66, .16); border-color: rgba(255, 107, 129, .45); color: #ff7a8d; }
-  .pchip.act-x { background: rgba(255, 255, 255, .14); border-color: rgba(255, 255, 255, .36); color: #f8fafc; }
-  .pnote { font-size: 11.5px; color: var(--muted); margin-left: auto; opacity: .85; }
+  .pchip.act-dy { background: rgba(37, 244, 238, .15); border-color: rgba(37, 244, 238, .48); color: #84f7f3; transform: translateY(-1px); }
+  .pchip.act-xhs { background: rgba(255, 36, 66, .18); border-color: rgba(255, 107, 129, .50); color: #ff8598; transform: translateY(-1px); }
+  .pchip.act-x { background: rgba(255, 255, 255, .15); border-color: rgba(255, 255, 255, .42); color: #f8fafc; transform: translateY(-1px); }
+  .pnote { font-size: 11.5px; color: var(--muted); margin-left: auto; opacity: .88; }
   textarea {
-    width: 100%; min-height: 92px; border: 1px solid var(--line); background: rgba(8, 11, 17, .88);
-    color: var(--text); border-radius: 13px; padding: 11px 12px; font: 14px/1.5 inherit;
-    resize: vertical; outline: none; transition: border-color .18s, box-shadow .18s;
+    width: 100%; min-height: 92px; border: 1px solid var(--line); background: rgba(7, 10, 16, .92);
+    color: var(--text); border-radius: 14px; padding: 11px 13px; font: 14px/1.55 inherit;
+    resize: vertical; outline: none; transition: border-color .18s, box-shadow .18s, background .18s;
   }
-  textarea:focus { border-color: var(--line-hi); box-shadow: 0 0 0 3px rgba(59, 130, 246, .16); }
+  textarea:focus { border-color: var(--line-hi); background: #070a10; box-shadow: 0 0 0 3px var(--plat-ring); }
   .detect {
     display: none; align-items: center; justify-content: space-between; gap: 8px;
-    margin-top: 9px; padding: 8px 11px; border-radius: 10px; font-size: 12.5px;
-    background: var(--ok-soft); border: 1px solid rgba(63, 185, 80, .30); color: #9ae6b4;
+    margin-top: 9px; padding: 8px 11px; border-radius: 11px; font-size: 12.5px;
+    background: var(--ok-soft); border: 1px solid rgba(63, 185, 80, .32); color: #9ae6b4;
   }
-  .detect.warn { background: rgba(227, 179, 65, .11); border-color: rgba(227, 179, 65, .30); color: #f6d57a; }
+  .detect.warn { background: rgba(227, 179, 65, .11); border-color: rgba(227, 179, 65, .32); color: #f6d57a; }
   .detect.show { display: flex; }
   .detect-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .detect-btn {
@@ -233,18 +247,18 @@ INDEX_HTML = r"""<!doctype html>
   button, a.btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
     min-height: 44px; border-radius: 12px; font: 600 14px/1 inherit; padding: 0 13px;
-    border: 1px solid var(--line); background: #202736; color: var(--text);
+    border: 1px solid var(--line); background: #1e2534; color: var(--text);
     text-decoration: none; cursor: pointer; white-space: nowrap; touch-action: manipulation;
-    transition: transform .08s, opacity .15s, background .15s, border-color .15s;
+    transition: transform .1s ease, opacity .15s, background .15s, border-color .15s, box-shadow .15s;
   }
   button svg, a.btn svg { width: 15px; height: 15px; flex-shrink: 0; }
-  button:active, a.btn:active { transform: scale(.98); }
+  button:active, a.btn:active { transform: scale(.97); }
   button.pri, a.btn.pri {
-    background: linear-gradient(135deg, var(--accent), var(--accent-hi));
-    border-color: transparent; color: #fff; flex: 1.25;
-    box-shadow: 0 5px 16px rgba(37, 99, 235, .30), inset 0 1px 0 rgba(255, 255, 255, .2);
+    background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+    border-color: rgba(147, 197, 253, .22); color: #fff; flex: 1.25;
+    box-shadow: 0 6px 18px -2px rgba(37, 99, 235, .42), inset 0 1px 0 rgba(255, 255, 255, .24);
   }
-  button.sec { flex: 1; background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .11); }
+  button.sec { flex: 1; background: rgba(255, 255, 255, .065); border-color: rgba(255, 255, 255, .12); }
   button.ghost { background: rgba(255, 255, 255, .03); color: var(--muted); padding: 0 12px; }
   button:disabled { opacity: .55; cursor: not-allowed; transform: none; }
   .prog { display: none; height: 3px; border-radius: 3px; background: rgba(255,255,255,.06); overflow: hidden; margin-top: 11px; }
@@ -252,15 +266,34 @@ INDEX_HTML = r"""<!doctype html>
   .prog > i {
     display: block; height: 100%; width: 42%; border-radius: 3px;
     background: linear-gradient(90deg, transparent, #60a5fa, #38bdf8, transparent);
-    animation: slide 1.1s ease-in-out infinite;
+    animation: slide 1.05s ease-in-out infinite;
   }
   @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(260%); } }
   .hint { margin-top: 9px; font-size: 12px; color: var(--muted); min-height: 17px; line-height: 1.45; }
-  .err { display: none; margin-top: 10px; padding: 11px 12px; border-radius: 11px; background: rgba(248, 81, 73, .12); border: 1px solid rgba(248, 81, 73, .35); color: #ffb3ae; font-size: 13px; }
+  .err { display: none; margin-top: 10px; padding: 11px 12px; border-radius: 12px; background: rgba(248, 81, 73, .12); border: 1px solid rgba(248, 81, 73, .36); color: #ffb3ae; font-size: 13px; }
   .err.show { display: block; }
   .err button { min-height: 32px; padding: 0 10px; font-size: 12px; margin-top: 8px; }
+  .skel-card { display: none; }
+  .skel-card.show { display: block; }
+  .skel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .skel-step { font-size: 12.5px; color: #93c5fd; font-weight: 600; }
+  .skel-bar {
+    position: relative; overflow: hidden; height: 14px; border-radius: 8px;
+    background: rgba(255, 255, 255, .055); margin-bottom: 10px;
+  }
+  .skel-bar.w60 { width: 62%; }
+  .skel-bar.w40 { width: 42%; height: 11px; margin-bottom: 14px; }
+  .skel-bar::before {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(105deg, transparent 20%, rgba(255, 255, 255, .08) 48%, transparent 76%);
+    transform: translateX(-100%); animation: skelSweep 1.15s ease-in-out infinite;
+  }
+  .skel-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  @media (min-width: 560px) { .skel-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+  .skel-tile { aspect-ratio: 4/5; border-radius: 13px; border: 1px solid rgba(255,255,255,.06); background: #121722; }
   .meta { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 11px; }
   .meta-main { flex: 1; min-width: 0; }
+  .meta-acts { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
   .copy-btn {
     min-height: 30px; padding: 0 10px; border-radius: 9px; font-size: 12px; font-weight: 500;
     background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .11); color: var(--muted); flex-shrink: 0;
@@ -274,16 +307,21 @@ INDEX_HTML = r"""<!doctype html>
   .author { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
   .acts { display: flex; gap: 8px; margin: 10px 0 14px; flex-wrap: wrap; }
   .sel-bar {
+    position: sticky; top: calc(8px + env(safe-area-inset-top)); z-index: 25;
     display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
-    margin: 4px 0 10px; padding: 8px 11px; border-radius: 12px;
-    background: rgba(255, 255, 255, .035); border: 1px solid var(--line);
+    margin: 4px 0 11px; padding: 9px 11px; border-radius: 13px;
+    background: rgba(16, 21, 31, .96); border: 1px solid rgba(255, 255, 255, .11);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, .38);
   }
   .sel-info { font-size: 12.5px; color: var(--muted); }
   .sel-info b { color: #93c5fd; font-weight: 600; }
-  .sel-acts { display: flex; gap: 6px; align-items: center; }
+  .sel-acts { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
   .sel-btn {
-    min-height: 30px; padding: 0 10px; border-radius: 8px; font-size: 12px; font-weight: 500;
-    background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .1); color: var(--text);
+    min-height: 30px; padding: 0 9px; border-radius: 8px; font-size: 12px; font-weight: 500;
+    background: rgba(255, 255, 255, .065); border: 1px solid rgba(255, 255, 255, .11); color: var(--text);
+  }
+  .sel-btn.qpick.on {
+    background: rgba(59, 130, 246, .24); border-color: rgba(96, 165, 250, .6); color: #bfdbfe;
   }
   .vbox { background: #000; border-radius: 14px; overflow: hidden; margin-bottom: 10px; border: 1px solid var(--line); box-shadow: 0 6px 20px rgba(0, 0, 0, .36); }
   .vbox video { width: 100%; max-height: 62vh; display: block; background: #000; }
@@ -291,11 +329,14 @@ INDEX_HTML = r"""<!doctype html>
   .grid.single { grid-template-columns: minmax(0, 1fr); }
   @media (min-width: 560px) { .grid:not(.single) { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   .item {
-    background: #0d1119; border: 1.5px solid var(--line); border-radius: 14px; overflow: hidden;
+    background: #0d1119; border: 1.5px solid var(--line); border-radius: 15px; overflow: hidden;
     display: flex; flex-direction: column; contain: layout style paint;
-    transition: border-color .16s ease, box-shadow .16s ease;
+    transition: border-color .16s ease, box-shadow .16s ease, transform .14s ease;
   }
-  .item.sel { border-color: var(--accent-hi); box-shadow: 0 0 0 1px rgba(59, 130, 246, .35), 0 6px 18px rgba(37, 99, 235, .18); }
+  .item.stagger { animation: itemIn .26s cubic-bezier(.22, 1, .36, 1) both; animation-delay: calc(var(--i, 0) * 26ms); }
+  @keyframes itemIn { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+  .item.sel { border-color: var(--accent-hi); box-shadow: 0 0 0 1px rgba(59, 130, 246, .35), 0 8px 20px rgba(37, 99, 235, .20); }
+  .item.saved { border-color: rgba(63, 185, 80, .42); }
   .thumb {
     position: relative; aspect-ratio: 4/5; overflow: hidden; cursor: zoom-in;
     background: #121722; touch-action: manipulation;
@@ -320,40 +361,64 @@ INDEX_HTML = r"""<!doctype html>
     gap: 4px; font-size: 12px; color: var(--muted); background: rgba(13, 17, 25, .92); cursor: pointer;
   }
   .thumb.broken .thumb-err { display: flex; }
-  .tags-tl { position: absolute; left: 7px; top: 7px; display: flex; gap: 5px; z-index: 2; pointer-events: none; }
+  .tags-tl { position: absolute; left: 7px; top: 7px; display: flex; gap: 4px; z-index: 2; pointer-events: none; flex-wrap: wrap; max-width: calc(100% - 44px); }
   .tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 7px; background: rgba(6, 9, 15, .76); color: #fff; border: 1px solid rgba(255,255,255,.08); }
   .tag.live { background: rgba(37, 99, 235, .88); border-color: rgba(147,197,253,.35); }
+  .tag.saved-tag { display: none; background: rgba(22, 101, 52, .9); border-color: rgba(134, 239, 172, .38); color: #dcfce7; }
+  .item.saved .tag.saved-tag { display: inline-block; }
   .pick-btn {
     position: absolute; right: 7px; top: 7px; width: 28px; height: 28px; min-height: 28px; padding: 0;
     border-radius: 999px; border: 1.5px solid rgba(255, 255, 255, .78);
     background: rgba(8, 12, 20, .74);
     color: rgba(255, 255, 255, .48); font-size: 13px; font-weight: 700; z-index: 3;
     display: flex; align-items: center; justify-content: center;
-    transition: transform .12s ease, background .14s ease, border-color .14s ease;
+    transition: transform .14s cubic-bezier(.22, 1, .36, 1), background .14s ease, border-color .14s ease;
   }
   .pick-btn::after { content: ""; position: absolute; inset: -8px; }
   .pick-btn.on {
     background: linear-gradient(135deg, var(--accent), var(--accent-hi));
     border-color: #93c5fd; color: #fff; box-shadow: 0 2px 10px rgba(37, 99, 235, .48);
+    transform: scale(1.06);
   }
   .zoom-ic {
-    position: absolute; right: 7px; bottom: 7px; width: 24px; height: 24px; border-radius: 7px;
-    background: rgba(6, 9, 15, .70); color: rgba(255, 255, 255, .88);
-    display: flex; align-items: center; justify-content: center; pointer-events: none;
+    position: absolute; right: 7px; bottom: 7px; width: 26px; height: 26px; border-radius: 8px;
+    background: rgba(6, 9, 15, .72); border: 1px solid rgba(255,255,255,.10); color: rgba(255, 255, 255, .90);
+    display: flex; align-items: center; justify-content: center; pointer-events: auto; cursor: zoom-in; z-index: 3;
   }
   .zoom-ic svg { width: 13px; height: 13px; }
   .item-ft { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
   .item-ft a.btn { min-height: 37px; font-size: 12.5px; width: 100%; border-radius: 9px; padding: 0 10px; }
+  .float-dock {
+    position: fixed; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom)); z-index: 80;
+    width: min(560px, calc(100vw - 24px));
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 9px 10px 9px 14px; border-radius: 16px;
+    background: rgba(16, 22, 34, .97); border: 1px solid rgba(96, 165, 250, .38);
+    box-shadow: 0 16px 36px rgba(0, 0, 0, .58), inset 0 1px 0 rgba(255, 255, 255, .09);
+    transform: translate3d(-50%, 130%, 0); opacity: 0; pointer-events: none;
+    transition: transform .24s cubic-bezier(.22, 1, .36, 1), opacity .18s ease;
+  }
+  .float-dock.show { transform: translate3d(-50%, 0, 0); opacity: 1; pointer-events: auto; }
+  .dock-meta { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .dock-meta b { color: #93c5fd; font-weight: 700; }
+  .dock-clr { min-height: 38px; padding: 0 12px; font-size: 12.5px; background: rgba(255,255,255,.06); border-radius: 10px; }
+  .dock-save { min-height: 38px; padding: 0 14px; font-size: 13px; border-radius: 10px; flex: 1; max-width: 240px; }
   .hist-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
   .hist-hd b { font-size: 14px; }
   .hist-clr { background: transparent; border: none; color: var(--muted); font-size: 12px; min-height: 28px; padding: 0 6px; cursor: pointer; }
   .hist-list { display: flex; flex-direction: column; gap: 7px; }
+  .hist-item { display: flex; align-items: center; gap: 6px; }
   .hist-row {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
     padding: 9px 11px; border-radius: 12px; border: 1px solid var(--line); background: rgba(10, 13, 20, .75);
-    cursor: pointer; text-align: left; width: 100%; min-height: 44px;
+    cursor: pointer; text-align: left; flex: 1; min-width: 0; min-height: 44px;
   }
   .hist-row:active { background: rgba(59, 130, 246, .12); border-color: rgba(96, 165, 250, .35); }
+  .hist-del {
+    width: 34px; min-width: 34px; min-height: 44px; padding: 0; border-radius: 11px;
+    background: rgba(255,255,255,.035); border: 1px solid var(--line); color: var(--muted); font-size: 16px; line-height: 1;
+  }
+  .hist-del:active { color: #fca5a5; border-color: rgba(248, 81, 73, .38); }
   .hist-title { font-size: 13px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
   .hist-time { font-size: 11.5px; color: var(--muted); flex-shrink: 0; }
   .modal {
@@ -406,7 +471,7 @@ INDEX_HTML = r"""<!doctype html>
   .lb-qual.hd { background: rgba(63, 185, 80, .18); color: #86efac; }
   .lb-stage {
     flex: 1; width: 100%; display: flex; align-items: center; justify-content: center;
-    position: relative; min-height: 0; margin: 8px 0; overflow: hidden;
+    position: relative; min-height: 0; margin: 8px 0 6px; overflow: hidden;
     touch-action: none; user-select: none; -webkit-user-select: none;
   }
   .lb-stage img {
@@ -421,6 +486,24 @@ INDEX_HTML = r"""<!doctype html>
   }
   .lb-nav.prev { left: 4px; }
   .lb-nav.next { right: 4px; }
+  .lb-strip {
+    width: 100%; max-width: 640px; display: flex; gap: 7px; padding: 4px 2px 8px;
+    overflow-x: auto; scrollbar-width: none; position: relative; z-index: 2;
+  }
+  .lb-strip::-webkit-scrollbar { display: none; }
+  .lb-strip-item {
+    position: relative; width: 46px; height: 46px; min-width: 46px; min-height: 46px; padding: 0;
+    border-radius: 9px; overflow: hidden; border: 2px solid rgba(255,255,255,.14);
+    background: #121722; flex-shrink: 0; opacity: .66; transition: opacity .15s, border-color .15s, transform .15s;
+  }
+  .lb-strip-item.cur { opacity: 1; border-color: #60a5fa; transform: scale(1.06); }
+  .lb-strip-item img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+  .lb-s-chk {
+    position: absolute; right: 2px; top: 2px; width: 14px; height: 14px; border-radius: 999px;
+    background: var(--accent); color: #fff; font-size: 9px; line-height: 14px; text-align: center;
+    display: none; pointer-events: none;
+  }
+  .lb-strip-item.picked .lb-s-chk { display: block; }
   .lb-ft { width: 100%; max-width: 440px; display: flex; gap: 8px; position: relative; z-index: 2; }
   .lb-pick {
     min-height: 44px; padding: 0 14px; border-radius: 12px; font-size: 13.5px; font-weight: 600;
@@ -436,8 +519,8 @@ INDEX_HTML = r"""<!doctype html>
   }
   .toast.show { opacity: 1; transform: translate(-50%, 0); }
   @media (prefers-reduced-motion: reduce) {
-    .card.anim, .thumb::before, .prog > i { animation: none !important; }
-    .modal, .sheet, .lightbox, .thumb img, .toast { transition: none !important; }
+    .card.anim, .item.stagger, .dot.on::after, .thumb::before, .skel-bar::before, .prog > i { animation: none !important; }
+    .modal, .sheet, .lightbox, .float-dock, .thumb img, .toast, .pchip { transition: none !important; }
   }
 </style>
 </head>
@@ -456,8 +539,8 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
     <div class="hd-acts">
-      <button class="pill" id="stopBtn" type="button" style="display:none">休眠</button>
-      <button class="pill" id="cfgBtn" type="button">设置</button>
+      <button class="pill" id="stopBtn" type="button" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>休眠</button>
+      <button class="pill" id="cfgBtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置</button>
     </div>
   </div>
 
@@ -470,7 +553,7 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </div>
 
-  <div class="card">
+  <div class="card composer">
     <div class="plats">
       <span class="pchip" id="pc-dy">抖音</span>
       <span class="pchip" id="pc-xhs">小红书</span>
@@ -498,6 +581,15 @@ INDEX_HTML = r"""<!doctype html>
     <div class="err" id="err"></div>
   </div>
 
+  <div class="card skel-card" id="skelCard">
+    <div class="skel-head"><span class="skel-step" id="skelStep">正在连接目标页面并提取无水印直链…</span></div>
+    <div class="skel-bar w60"></div>
+    <div class="skel-bar w40"></div>
+    <div class="skel-grid">
+      <div class="skel-tile"></div><div class="skel-tile"></div><div class="skel-tile"></div><div class="skel-tile"></div>
+    </div>
+  </div>
+
   <div class="card" id="resCard" style="display:none"></div>
 
   <div class="card" id="histCard" style="display:none">
@@ -507,6 +599,12 @@ INDEX_HTML = r"""<!doctype html>
     </div>
     <div class="hist-list" id="histList"></div>
   </div>
+</div>
+
+<div class="float-dock" id="floatDock" aria-hidden="true">
+  <div class="dock-meta">已选 <b id="dockCount">0</b> 张</div>
+  <button type="button" class="dock-clr" id="dockClrBtn">清空</button>
+  <button type="button" class="pri dock-save" id="dockSaveBtn">保存已选到相册</button>
 </div>
 
 <div class="modal" id="cfgModal">
@@ -548,6 +646,7 @@ INDEX_HTML = r"""<!doctype html>
     <img id="lbImg" alt="">
     <button type="button" class="lb-nav next" id="lbNext">›</button>
   </div>
+  <div class="lb-strip" id="lbStrip" style="display:none"></div>
   <div class="lb-ft">
     <button type="button" id="lbPickBtn" class="lb-pick" style="display:none">选中此图</button>
     <a class="btn pri" id="lbDl" href="#">下载本张无损原图</a>
@@ -576,6 +675,8 @@ let activeOverlay = '';
 let ignoreNextPop = false;
 let lbIsSelected = null;
 let lbTogglePick = null;
+let syncDockFn = null;
+let lbRenderedImagesRef = null;
 let toastTimer = null;
 let timerId = null;
 let saveTimerId = null;
@@ -637,12 +738,53 @@ function showErr(msg) {
 
 function setHint(msg) { $('hint').textContent = msg || ''; }
 
+function haptic(ms = 8) {
+  try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) {}
+}
+
 function platName(p) {
   return p === 'douyin' ? '抖音' : (p === 'xiaohongshu' ? '小红书' : (p === 'x' ? 'X' : p));
 }
 
 function platBadge(p) {
   return p === 'xiaohongshu' ? 'xhs' : (p === 'douyin' ? 'dy' : (p === 'x' ? 'x' : ''));
+}
+
+function platShortCode(p) {
+  return p === 'douyin' ? 'dy' : (p === 'xiaohongshu' ? 'xhs' : (p === 'x' ? 'x' : ''));
+}
+
+function hideDock() {
+  const dock = $('floatDock');
+  if (dock) {
+    dock.classList.remove('show');
+    dock.setAttribute('aria-hidden', 'true');
+  }
+}
+
+async function copyText(txt, okMsg, failMsg = '复制失败，请手动长按复制') {
+  let ok = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(txt);
+      ok = true;
+    }
+  } catch (e) {}
+  if (!ok) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = txt;
+      ta.readOnly = true;
+      ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+      document.body.appendChild(ta);
+      ta.select();
+      ok = document.execCommand('copy');
+      ta.remove();
+    } catch (e) {}
+  }
+  if (ok) haptic(6);
+  showToast(ok ? okMsg : failMsg);
+  return ok;
 }
 
 function clientExtractUrl(text) {
@@ -666,6 +808,9 @@ function setPlatChip(code) {
     if (!el) return;
     el.className = 'pchip' + (code === k ? ' act-' + k : '');
   });
+  const bodyCode = code || (currentJob ? platShortCode(currentJob.platform) : '');
+  if (bodyCode) document.body.dataset.plat = bodyCode;
+  else document.body.removeAttribute('data-plat');
 }
 
 function updateDetectBar() {
@@ -748,17 +893,21 @@ function saveHistory(d, inputUrl) {
 
 function renderHistory() {
   try {
-    const list = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
+    const rawList = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
+    const list = Array.isArray(rawList) ? rawList : [];
     const card = $('histCard');
     const box = $('histList');
     if (!list.length) { card.style.display = 'none'; box.innerHTML = ''; return; }
     box.innerHTML = list.map((it, i) => {
       const cls = platBadge(it.platform);
-      return '<button type="button" class="hist-row" data-idx="' + i + '">' +
+      return '<div class="hist-item">' +
+        '<button type="button" class="hist-row" data-idx="' + i + '">' +
         '<span class="badge ' + cls + '">' + esc(it.platName || platName(it.platform)) + '</span>' +
         '<span class="hist-title">' + esc(it.title) + '</span>' +
         '<span class="hist-time">' + esc(it.time || '') + '</span>' +
-        '</button>';
+        '</button>' +
+        '<button type="button" class="hist-del" data-del="' + i + '" aria-label="删除此条">×</button>' +
+        '</div>';
     }).join('');
     box.querySelectorAll('.hist-row').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -768,6 +917,18 @@ function renderHistory() {
         updateDetectBar();
         runExtract(it.url);
         window.scrollTo({ top: 0, behavior: 'smooth' });
+      });
+    });
+    box.querySelectorAll('.hist-del').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const idx = Number(btn.dataset.del);
+        if (!Number.isInteger(idx) || idx < 0 || idx >= list.length) return;
+        list.splice(idx, 1);
+        localStorage.setItem(HIST_KEY, JSON.stringify(list));
+        haptic(6);
+        renderHistory();
+        showToast('已删除该条记录');
       });
     });
     card.style.display = 'block';
@@ -790,14 +951,30 @@ async function runExtract(text) {
   if ($('goTxt')) $('goTxt').textContent = '解析中…';
   $('prog').classList.add('show');
 
+  const skelCard = $('skelCard');
+  const skelStep = $('skelStep');
+  const resCard = $('resCard');
+  const hadPrev = !!(currentJob && resCard && resCard.style.display !== 'none' && resCard.innerHTML);
+  if (resCard) resCard.style.display = 'none';
+  hideDock();
+  if (skelStep) skelStep.textContent = '正在连接目标页面并提取无水印直链…';
+  if (skelCard) skelCard.classList.add('show');
+
   const t0 = performance.now();
   const baseHint = '正在请求目标页面并解析最高画质无水印直链… ';
   setHint(baseHint + '0.0s');
   clearInterval(timerId);
   timerId = setInterval(() => {
-    setHint(baseHint + ((performance.now() - t0) / 1000).toFixed(1) + 's');
+    const dt = (performance.now() - t0) / 1000;
+    setHint(baseHint + dt.toFixed(1) + 's');
+    if (skelStep) {
+      if (dt < 1.2) skelStep.textContent = '正在连接目标页面并提取无水印直链…';
+      else if (dt < 3.5) skelStep.textContent = '正在穿透短链并解析最高画质地址…';
+      else skelStep.textContent = '正在预热缩略图与原图直链…';
+    }
   }, 100);
 
+  let okRender = false;
   try {
     const { res: r, data: d } = await fetchJsonWithRetry('/api/extract', {
       method: 'POST',
@@ -810,11 +987,14 @@ async function runExtract(text) {
       setHint('');
       return;
     }
+    okRender = true;
     currentJob = d;
     markOnline();
     const found = clientExtractUrl(val);
     saveHistory(d, (found && found.url) || val);
+    if (skelCard) skelCard.classList.remove('show');
     renderResult(d);
+    haptic(10);
     requestAnimationFrame(() => {
       const card = $('resCard');
       if (card && card.getBoundingClientRect().top > window.innerHeight * 0.62) {
@@ -844,6 +1024,11 @@ async function runExtract(text) {
     busy = false;
     clearInterval(timerId);
     $('prog').classList.remove('show');
+    if (skelCard) skelCard.classList.remove('show');
+    if (!okRender && hadPrev && resCard) {
+      resCard.style.display = 'block';
+      if (typeof syncDockFn === 'function') syncDockFn();
+    }
     $('goBtn').disabled = false;
     if ($('goTxt')) $('goTxt').textContent = '提取无水印';
   }
@@ -915,6 +1100,59 @@ function warmLightboxNeighbors(idx) {
   });
 }
 
+function syncLbPickBtn(im) {
+  const pkEl = $('lbPickBtn');
+  if (!pkEl) return;
+  if (lbImages.length > 1 && typeof lbIsSelected === 'function' && im) {
+    const on = !!lbIsSelected(im.id);
+    pkEl.style.display = '';
+    pkEl.textContent = on ? '已选中 ✓' : '选中此图';
+    pkEl.classList.toggle('on', on);
+  } else {
+    pkEl.style.display = 'none';
+  }
+}
+
+function syncLbStrip() {
+  const strip = $('lbStrip');
+  if (!strip || lbImages.length <= 1) return;
+  let curBtn = null;
+  const items = strip.querySelectorAll('.lb-strip-item');
+  items.forEach((btn, i) => {
+    const isCur = i === lbIdx;
+    const im = lbImages[i];
+    const picked = !!(im && typeof lbIsSelected === 'function' && lbIsSelected(im.id));
+    btn.classList.toggle('cur', isCur);
+    btn.classList.toggle('picked', picked);
+    if (isCur) curBtn = btn;
+  });
+  if (curBtn) {
+    try { curBtn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); } catch (e) {}
+  }
+}
+
+function renderLbStrip() {
+  const strip = $('lbStrip');
+  if (!strip) return;
+  if (lbImages.length <= 1) {
+    strip.style.display = 'none';
+    strip.innerHTML = '';
+    lbRenderedImagesRef = null;
+    return;
+  }
+  if (lbRenderedImagesRef !== lbImages) {
+    lbRenderedImagesRef = lbImages;
+    strip.innerHTML = lbImages.map((im, i) => {
+      const thumb = im.thumb_url || im.preview_url;
+      return '<button type="button" class="lb-strip-item" data-idx="' + i + '" aria-label="第 ' + (i + 1) + ' 张">' +
+        '<img loading="lazy" decoding="async" src="' + esc(thumb) + '" alt="">' +
+        '<span class="lb-s-chk">✓</span></button>';
+    }).join('');
+  }
+  strip.style.display = 'flex';
+  syncLbStrip();
+}
+
 function closeLightbox(fromPop = false) {
   const lb = $('lb');
   if (!lb.classList.contains('open')) return;
@@ -942,17 +1180,7 @@ function showLightbox(idx) {
   $('lbDl').href = im.download_url;
   const thumb = im.thumb_url || im.preview_url;
   const qEl = $('lbQuality');
-  const pkEl = $('lbPickBtn');
-  if (pkEl) {
-    if (lbImages.length > 1 && typeof lbIsSelected === 'function') {
-      const on = !!lbIsSelected(im.id);
-      pkEl.style.display = '';
-      pkEl.textContent = on ? '已选中 ✓' : '选中此图';
-      pkEl.classList.toggle('on', on);
-    } else {
-      pkEl.style.display = 'none';
-    }
-  }
+  syncLbPickBtn(im);
   $('lbImg').src = thumb;
   if (im.preview_url && im.preview_url !== thumb) {
     if (qEl) { qEl.textContent = '高清预览 · 加载原图中'; qEl.className = 'lb-qual'; }
@@ -968,12 +1196,20 @@ function showLightbox(idx) {
   }
   $('lbPrev').style.display = lbImages.length > 1 ? '' : 'none';
   $('lbNext').style.display = lbImages.length > 1 ? '' : 'none';
+  renderLbStrip();
   $('lb').classList.add('open');
   if (!wasOpen) pushOverlayHistory('lb');
   warmLightboxNeighbors(lbIdx);
 }
 
 function renderResult(d) {
+  if ($('skelCard')) $('skelCard').classList.remove('show');
+  syncDockFn = null;
+  hideDock();
+  const bodyCode = platShortCode(d.platform);
+  if (bodyCode) document.body.dataset.plat = bodyCode;
+  else document.body.removeAttribute('data-plat');
+
   const card = $('resCard');
   const plat = platName(d.platform);
   const badgeCls = platBadge(d.platform);
@@ -983,8 +1219,10 @@ function renderResult(d) {
   lbImages = images;
   lbWarmCache.clear();
   const selectedImgIds = new Set();
+  const savedAssetIds = new Set();
   const liveMap = new Map();
   lives.forEach(l => liveMap.set(l.pair_index, l));
+  let quickPickMode = false;
 
   function getSelectedAssetIds() {
     const ids = [];
@@ -1006,8 +1244,10 @@ function renderResult(d) {
     '<div class="title"><span class="badge ' + badgeCls + '">' + esc(plat) + '</span>' + esc(d.title) + '</div>' +
     '<div class="author">' + (d.author ? esc(d.author) + ' · ' : '') + esc(counts.join(' · ')) + '</div>' +
     '</div>' +
+    '<div class="meta-acts">' +
     (d.title ? '<button type="button" class="copy-btn" id="copyTitleBtn">复制文案</button>' : '') +
-    '</div>';
+    (d.assets.length ? '<button type="button" class="copy-btn" id="copyLinksBtn">复制直链</button>' : '') +
+    '</div></div>';
 
   if (d.assets.length > 0) {
     const defaultSaveTxt = d.assets.length > 1 ? '一键保存全部到相册' : '保存到相册';
@@ -1029,6 +1269,7 @@ function renderResult(d) {
       html += '<div class="sel-bar" id="selBar">' +
         '<span class="sel-info" id="selInfo">已选 <b>0</b> / ' + images.length + ' 张（默认保存全部）</span>' +
         '<div class="sel-acts">' +
+        '<button type="button" class="sel-btn qpick" id="quickPickBtn">点图直选</button>' +
         '<button type="button" class="sel-btn" id="selAllBtn">全选</button>' +
         '<button type="button" class="sel-btn" id="selInvBtn">反选</button>' +
         '<button type="button" class="sel-btn" id="selClrBtn" style="display:none">清空</button>' +
@@ -1040,14 +1281,17 @@ function renderResult(d) {
       const thumbSrc = im.thumb_url || im.preview_url;
       const loadMode = idx < 12 ? 'eager' : 'lazy';
       const prioAttr = idx < 4 ? ' fetchpriority="high"' : '';
-      html += '<div class="item" data-id="' + esc(im.id) + '">' +
+      const staggerCls = idx < 10 ? ' stagger' : '';
+      const staggerStyle = idx < 10 ? ' style="--i:' + idx + '"' : '';
+      html += '<div class="item' + staggerCls + '"' + staggerStyle + ' data-id="' + esc(im.id) + '">' +
         '<div class="thumb" data-idx="' + idx + '">' +
         '<img loading="' + loadMode + '"' + prioAttr + ' decoding="async" src="' + esc(thumbSrc) + '" onload="this.classList.add(\'loaded\');this.parentElement.classList.add(\'done\')" onerror="this.classList.add(\'loaded\');this.parentElement.classList.add(\'done\',\'broken\')" alt="">' +
         '<div class="thumb-err"><span>预览加载失败</span><span style="font-size:11px;opacity:.75">点击重试</span></div>' +
         '<div class="tags-tl"><span class="tag">#' + (idx + 1) + '</span>' +
-        (lv ? '<span class="tag live">实况</span>' : '') + '</div>' +
+        (lv ? '<span class="tag live">实况</span>' : '') +
+        '<span class="tag saved-tag">已存 ✓</span></div>' +
         (images.length > 1 ? '<button type="button" class="pick-btn" data-id="' + esc(im.id) + '" aria-label="选择第 ' + (idx + 1) + ' 张">✓</button>' : '') +
-        '<span class="zoom-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg></span></div>' +
+        '<span class="zoom-ic" aria-label="放大查看"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg></span></div>' +
         '<div class="item-ft">' +
         '<a class="btn pri" href="' + esc(im.download_url) + '">下载无损原图</a>' +
         (lv ? '<a class="btn" href="' + esc(lv.download_url) + '">下载实况视频</a>' : '') +
@@ -1068,6 +1312,11 @@ function renderResult(d) {
   card.classList.add('anim');
 
   let saving = false;
+  const dock = $('floatDock');
+  const dockCount = $('dockCount');
+  const dockClr = $('dockClrBtn');
+  const dockSave = $('dockSaveBtn');
+
   function defaultMainSaveText() {
     if (images.length > 1 && selectedImgIds.size > 0 && selectedImgIds.size < images.length) {
       return '保存已选到相册 (' + selectedImgIds.size + ')';
@@ -1075,11 +1324,33 @@ function renderResult(d) {
     return d.assets.length > 1 ? '一键保存全部到相册' : '保存到相册';
   }
 
+  function defaultDockSaveText() {
+    if (selectedImgIds.size >= images.length) return '保存全部到相册';
+    return '保存已选 (' + selectedImgIds.size + ')';
+  }
+
+  function syncDock() {
+    if (!dock) return;
+    if (images.length > 1 && selectedImgIds.size > 0 && card.style.display !== 'none') {
+      if (dockCount) dockCount.textContent = String(selectedImgIds.size);
+      if (dockSave && !saving) {
+        dockSave.disabled = false;
+        dockSave.textContent = defaultDockSaveText();
+      }
+      dock.classList.add('show');
+      dock.setAttribute('aria-hidden', 'false');
+    } else {
+      hideDock();
+    }
+  }
+  syncDockFn = syncDock;
+
   function syncSelectionUI() {
     const n = selectedImgIds.size;
     const partial = images.length > 1 && n > 0 && n < images.length;
     card.querySelectorAll('.item[data-id]').forEach(it => {
       it.classList.toggle('sel', selectedImgIds.has(it.dataset.id));
+      it.classList.toggle('saved', savedAssetIds.has(it.dataset.id));
     });
     card.querySelectorAll('.pick-btn').forEach(btn => {
       btn.classList.toggle('on', selectedImgIds.has(btn.dataset.id));
@@ -1113,18 +1384,57 @@ function renderResult(d) {
         zipEl.textContent = '打包全部 (.zip)';
       }
     }
+    syncDock();
+    syncLbStrip();
+  }
+
+  function toggleImgSelection(id) {
+    if (!id) return false;
+    if (selectedImgIds.has(id)) selectedImgIds.delete(id);
+    else selectedImgIds.add(id);
+    haptic(6);
+    syncSelectionUI();
+    return selectedImgIds.has(id);
   }
 
   lbIsSelected = id => selectedImgIds.has(id);
-  lbTogglePick = id => {
-    if (selectedImgIds.has(id)) selectedImgIds.delete(id);
-    else selectedImgIds.add(id);
-    syncSelectionUI();
-    return selectedImgIds.has(id);
-  };
+  lbTogglePick = id => toggleImgSelection(id);
 
   card.querySelectorAll('.thumb').forEach(el => {
-    el.addEventListener('click', () => {
+    const parentItem = el.closest('.item[data-id]');
+    const itemId = parentItem ? parentItem.dataset.id : '';
+    let lpTimer = 0;
+    let sx = 0;
+    let sy = 0;
+
+    if (images.length > 1 && itemId) {
+      el.addEventListener('touchstart', e => {
+        if (el.classList.contains('broken') || e.target.closest('.pick-btn,.zoom-ic')) return;
+        if (!e.touches || e.touches.length !== 1) return;
+        sx = e.touches[0].clientX;
+        sy = e.touches[0].clientY;
+        clearTimeout(lpTimer);
+        lpTimer = setTimeout(() => {
+          lpTimer = 0;
+          el.dataset.lp = String(performance.now());
+          const picked = toggleImgSelection(itemId);
+          haptic(12);
+          showToast(picked ? '已选中此图' : '已取消选中');
+        }, 320);
+      }, { passive: true });
+      el.addEventListener('touchmove', e => {
+        if (!lpTimer || !e.touches || e.touches.length !== 1) return;
+        if (Math.hypot(e.touches[0].clientX - sx, e.touches[0].clientY - sy) > 10) {
+          clearTimeout(lpTimer);
+          lpTimer = 0;
+        }
+      }, { passive: true });
+      const cancelLp = () => { clearTimeout(lpTimer); lpTimer = 0; };
+      el.addEventListener('touchend', cancelLp, { passive: true });
+      el.addEventListener('touchcancel', cancelLp, { passive: true });
+    }
+
+    el.addEventListener('click', e => {
       if (el.classList.contains('broken')) {
         const img = el.querySelector('img');
         if (img && img.src) {
@@ -1135,6 +1445,11 @@ function renderResult(d) {
         }
         return;
       }
+      if (performance.now() - Number(el.dataset.lp || 0) < 420) return;
+      if (images.length > 1 && quickPickMode && itemId && !e.target.closest('.zoom-ic')) {
+        toggleImgSelection(itemId);
+        return;
+      }
       showLightbox(Number(el.dataset.idx || 0));
     });
   });
@@ -1142,17 +1457,25 @@ function renderResult(d) {
   card.querySelectorAll('.pick-btn').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
-      const id = btn.dataset.id;
-      if (!id) return;
-      if (selectedImgIds.has(id)) selectedImgIds.delete(id);
-      else selectedImgIds.add(id);
-      syncSelectionUI();
+      toggleImgSelection(btn.dataset.id);
     });
   });
+
+  const qPickBtn = $('quickPickBtn');
+  if (qPickBtn) {
+    qPickBtn.addEventListener('click', () => {
+      quickPickMode = !quickPickMode;
+      qPickBtn.classList.toggle('on', quickPickMode);
+      qPickBtn.textContent = quickPickMode ? '点图中 ✓' : '点图直选';
+      haptic(8);
+      showToast(quickPickMode ? '已开启点图直选（点右下角放大镜可预览大图）' : '已切换回点击看大图');
+    });
+  }
 
   if ($('selAllBtn')) {
     $('selAllBtn').addEventListener('click', () => {
       images.forEach(im => selectedImgIds.add(im.id));
+      haptic(8);
       syncSelectionUI();
     });
   }
@@ -1162,40 +1485,37 @@ function renderResult(d) {
         if (selectedImgIds.has(im.id)) selectedImgIds.delete(im.id);
         else selectedImgIds.add(im.id);
       });
+      haptic(8);
       syncSelectionUI();
     });
   }
   if ($('selClrBtn')) {
     $('selClrBtn').addEventListener('click', () => {
       selectedImgIds.clear();
+      haptic(6);
       syncSelectionUI();
     });
   }
 
   const copyBtn = $('copyTitleBtn');
   if (copyBtn) {
-    copyBtn.addEventListener('click', async () => {
-      const txt = d.title || '';
-      let ok = false;
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(txt);
-          ok = true;
-        }
-      } catch (e) {}
-      if (!ok) {
-        try {
-          const ta = document.createElement('textarea');
-          ta.value = txt;
-          ta.readOnly = true;
-          ta.style.cssText = 'position:fixed;left:-9999px;top:0';
-          document.body.appendChild(ta);
-          ta.select();
-          ok = document.execCommand('copy');
-          ta.remove();
-        } catch (e) {}
-      }
-      showToast(ok ? '已复制文案' : '请长按标题手动复制');
+    copyBtn.addEventListener('click', () => {
+      copyText(d.title || '', '已复制文案', '请长按标题手动复制');
+    });
+  }
+
+  const copyLinksBtn = $('copyLinksBtn');
+  if (copyLinksBtn) {
+    copyLinksBtn.addEventListener('click', () => {
+      const partial = images.length > 1 && selectedImgIds.size > 0 && selectedImgIds.size < images.length;
+      const pickedIds = partial ? new Set(getSelectedAssetIds()) : null;
+      const urls = d.assets
+        .filter(a => !pickedIds || pickedIds.has(a.id))
+        .map(a => a.url || a.download_url)
+        .filter(Boolean)
+        .map(u => { try { return new URL(u, location.href).href; } catch (e) { return u; } });
+      if (!urls.length) { showToast('暂无可复制的直链'); return; }
+      copyText(urls.join('\n'), '已复制 ' + urls.length + ' 条下载直链');
     });
   }
 
@@ -1206,6 +1526,7 @@ function renderResult(d) {
     const saveAllEl = $('saveAllLocalBtn');
     if (saveBtnEl) saveBtnEl.disabled = true;
     if (saveAllEl) saveAllEl.disabled = true;
+    if (dockSave) dockSave.disabled = true;
     const saveLabel = assetIds ? '正在保存已选原图… ' : '正在保存全部到相册… ';
     const saveT0 = performance.now();
     btn.textContent = saveLabel + '0.0s';
@@ -1225,19 +1546,28 @@ function renderResult(d) {
         showErr(res.error || '保存失败');
         if (saveBtnEl) { saveBtnEl.disabled = false; saveBtnEl.textContent = defaultMainSaveText(); }
         if (saveAllEl) { saveAllEl.disabled = false; saveAllEl.textContent = '保存全部'; }
+        if (dockSave) { dockSave.disabled = false; dockSave.textContent = defaultDockSaveText(); }
         return;
       }
       if (saveBtnEl) saveBtnEl.disabled = false;
       if (saveAllEl) saveAllEl.disabled = false;
+      if (dockSave) dockSave.disabled = false;
+      (assetIds || d.assets.map(a => a.id)).forEach(id => savedAssetIds.add(id));
+      card.querySelectorAll('.item[data-id]').forEach(it => {
+        if (savedAssetIds.has(it.dataset.id)) it.classList.add('saved');
+      });
       btn.textContent = donePrefix + ' ✓ (' + res.saved + '/' + res.total + ')';
-      const other = btn === saveBtnEl ? saveAllEl : saveBtnEl;
-      if (other) other.textContent = other === saveBtnEl ? defaultMainSaveText() : '保存全部';
+      if (saveBtnEl && btn !== saveBtnEl) saveBtnEl.textContent = defaultMainSaveText();
+      if (saveAllEl && btn !== saveAllEl) saveAllEl.textContent = '保存全部';
+      if (dockSave && btn !== dockSave) dockSave.textContent = defaultDockSaveText();
+      haptic(14);
       setHint('已直接保存到 ' + res.dir + ' 并触发相册刷新。');
       showToast('已存进相册 (' + res.saved + '/' + res.total + ')');
     } catch (e) {
       showErr('保存请求失败: ' + e.message);
       if (saveBtnEl) { saveBtnEl.disabled = false; saveBtnEl.textContent = defaultMainSaveText(); }
       if (saveAllEl) { saveAllEl.disabled = false; saveAllEl.textContent = '保存全部'; }
+      if (dockSave) { dockSave.disabled = false; dockSave.textContent = defaultDockSaveText(); }
     } finally {
       saving = false;
       clearInterval(saveTimerId);
@@ -1259,6 +1589,20 @@ function renderResult(d) {
       runSave(saveAllBtn, null, '已全部保存');
     });
   }
+  if (dockClr) {
+    dockClr.onclick = () => {
+      selectedImgIds.clear();
+      haptic(6);
+      syncSelectionUI();
+    };
+  }
+  if (dockSave) {
+    dockSave.onclick = () => {
+      const partial = images.length > 1 && selectedImgIds.size > 0 && selectedImgIds.size < images.length;
+      const ids = partial ? getSelectedAssetIds() : null;
+      runSave(dockSave, ids, partial ? '已存已选' : '已存进相册');
+    };
+  }
 }
 
 document.addEventListener('keydown', e => {
@@ -1274,13 +1618,22 @@ $('lbPickBtn').addEventListener('click', e => {
   if (!lbImages.length || typeof lbTogglePick !== 'function') return;
   const im = lbImages[lbIdx];
   if (!im) return;
-  const on = !!lbTogglePick(im.id);
-  const pkEl = $('lbPickBtn');
-  pkEl.textContent = on ? '已选中 ✓' : '选中此图';
-  pkEl.classList.toggle('on', on);
+  lbTogglePick(im.id);
+  haptic(8);
+  syncLbPickBtn(im);
+  syncLbStrip();
 });
-$('lbPrev').addEventListener('click', e => { e.stopPropagation(); showLightbox(lbIdx - 1); });
-$('lbNext').addEventListener('click', e => { e.stopPropagation(); showLightbox(lbIdx + 1); });
+$('lbPrev').addEventListener('click', e => { e.stopPropagation(); haptic(5); showLightbox(lbIdx - 1); });
+$('lbNext').addEventListener('click', e => { e.stopPropagation(); haptic(5); showLightbox(lbIdx + 1); });
+if ($('lbStrip')) {
+  $('lbStrip').addEventListener('click', e => {
+    const btn = e.target.closest('.lb-strip-item');
+    if (!btn) return;
+    e.stopPropagation();
+    haptic(5);
+    showLightbox(Number(btn.dataset.idx || 0));
+  });
+}
 
 let lbDragX = null;
 let lbDragY = null;
@@ -1290,6 +1643,8 @@ let lbMovedX = 0;
 let lbMovedY = 0;
 let lbBasePanX = 0;
 let lbBasePanY = 0;
+let lbPinchDist = 0;
+let lbPinchScale = 1;
 let lbLastTapAt = 0;
 let lbLastTapX = 0;
 let lbLastTapY = 0;
@@ -1301,7 +1656,17 @@ $('lb').addEventListener('click', e => {
 });
 
 $('lbStage').addEventListener('touchstart', e => {
-  if (!e.touches || e.touches.length !== 1) { lbDragX = null; return; }
+  if (e.touches && e.touches.length === 2) {
+    lbDragX = null;
+    lbDragMode = 'pinch';
+    lbPinchDist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    ) || 1;
+    lbPinchScale = lbScale;
+    return;
+  }
+  if (!e.touches || e.touches.length !== 1 || lbDragMode === 'pinch') { lbDragX = null; return; }
   const t = e.touches[0];
   lbDragX = t.clientX;
   lbDragY = t.clientY;
@@ -1314,6 +1679,15 @@ $('lbStage').addEventListener('touchstart', e => {
 }, { passive: true });
 
 $('lbStage').addEventListener('touchmove', e => {
+  if (lbDragMode === 'pinch' && e.touches && e.touches.length === 2) {
+    const dist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    lbScale = Math.max(1, Math.min(3.5, lbPinchScale * (dist / lbPinchDist)));
+    applyLbTransform(lbPanX, lbPanY, lbScale, false);
+    return;
+  }
   if (lbDragX == null || !e.touches || e.touches.length !== 1) return;
   const t = e.touches[0];
   const dx = t.clientX - lbDragX;
@@ -1323,8 +1697,9 @@ $('lbStage').addEventListener('touchmove', e => {
   if (lbScale > 1) {
     if (!lbDragMode && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) lbDragMode = 'pan';
     if (lbDragMode === 'pan') {
-      lbPanX = Math.max(-260, Math.min(260, lbBasePanX + dx));
-      lbPanY = Math.max(-260, Math.min(260, lbBasePanY + dy));
+      const maxPan = Math.max(240, Math.round((lbScale - 1) * 260));
+      lbPanX = Math.max(-maxPan, Math.min(maxPan, lbBasePanX + dx));
+      lbPanY = Math.max(-maxPan, Math.min(maxPan, lbBasePanY + dy));
       applyLbTransform(lbPanX, lbPanY, lbScale, false);
     }
     return;
@@ -1343,6 +1718,21 @@ $('lbStage').addEventListener('touchmove', e => {
 }, { passive: true });
 
 $('lbStage').addEventListener('touchend', e => {
+  if (lbDragMode === 'pinch') {
+    if (!e.touches || e.touches.length === 0) {
+      lbDragMode = '';
+      lbJustDraggedAt = performance.now();
+      if (lbScale < 1.06) {
+        resetLbTransform(true);
+      } else {
+        const maxPan = Math.max(240, Math.round((lbScale - 1) * 260));
+        lbPanX = Math.max(-maxPan, Math.min(maxPan, lbPanX));
+        lbPanY = Math.max(-maxPan, Math.min(maxPan, lbPanY));
+        applyLbTransform(lbPanX, lbPanY, lbScale, true);
+      }
+    }
+    return;
+  }
   if (lbDragX == null) return;
   const dt = Math.max(1, performance.now() - lbDragT);
   const moved = Math.hypot(lbMovedX, lbMovedY);
