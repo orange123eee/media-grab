@@ -2,6 +2,8 @@
 
 import gzip
 import http.client
+import json
+import re
 import select
 import ssl
 import threading
@@ -61,12 +63,145 @@ class MediaStream:
     content_range: str
     accept_ranges: str
     winning_url: str
+    etag: str = ""
+    last_modified: str = ""
 
     def close(self) -> None:
         try:
             self.resp.close()
         except Exception:
             pass
+
+
+_CONTENT_RANGE_RE = re.compile(r"^\s*bytes\s+(\d+)-(\d+)(?:/(\d+|\*))?\s*$", re.IGNORECASE)
+_DOWNLOAD_MAX_RETRIES = 3
+
+
+def _header_get(headers: Any, name: str) -> str:
+    """Read a header value case-insensitively from HTTPMessage or plain dict mocks."""
+    if not headers:
+        return ""
+    val = headers.get(name)
+    if val is None:
+        val = headers.get(name.lower())
+    if val is None and isinstance(headers, dict):
+        target = name.lower()
+        for k, v in headers.items():
+            if str(k).lower() == target:
+                val = v
+                break
+    return str(val or "").strip()
+
+
+def _parse_content_range(value: str) -> Optional[Tuple[int, int, Optional[int]]]:
+    """Parse HTTP Content-Range byte header into (start, end, total_or_None)."""
+    m = _CONTENT_RANGE_RE.match(value or "")
+    if not m:
+        return None
+    start = int(m.group(1))
+    end = int(m.group(2))
+    if end < start:
+        return None
+    raw_total = m.group(3)
+    total = int(raw_total) if (raw_total and raw_total.isdigit()) else None
+    return start, end, total
+
+
+def _expected_response_bytes(stream: MediaStream) -> Optional[int]:
+    """Determine exact expected body byte length for the current HTTP response."""
+    raw_cl = (stream.content_length or "").strip()
+    if raw_cl.isdigit():
+        return int(raw_cl)
+    if stream.status == 206:
+        parsed = _parse_content_range(stream.content_range)
+        if parsed is not None:
+            return parsed[1] - parsed[0] + 1
+    return None
+
+
+def _expected_total_size(stream: MediaStream, fallback_meta: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """Determine total expected file size from HTTP headers or saved metadata."""
+    if stream.status == 206:
+        parsed = _parse_content_range(stream.content_range)
+        if parsed is not None and parsed[2] is not None:
+            return parsed[2]
+    elif (stream.content_length or "").strip().isdigit():
+        return int(stream.content_length.strip())
+    if fallback_meta and isinstance(fallback_meta.get("total_size"), int):
+        return fallback_meta["total_size"]
+    return None
+
+
+def _read_part_meta(meta_path: Path) -> Optional[Dict[str, Any]]:
+    """Read valid sidecar download metadata, returning None when absent or corrupt."""
+    try:
+        if not meta_path.is_file():
+            return None
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    winning_url = data.get("winning_url")
+    if not isinstance(winning_url, str) or not winning_url:
+        return None
+    return data
+
+
+def _write_part_meta(meta_path: Path, meta: Dict[str, Any]) -> None:
+    """Atomically write download sidecar metadata alongside the partial file."""
+    tmp_path = meta_path.with_name(meta_path.name + ".tmp")
+    tmp_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(meta_path)
+
+
+def _cleanup_files(*paths: Path) -> None:
+    """Best-effort removal of temporary download files."""
+    for p in paths:
+        try:
+            if p.exists():
+                p.unlink()
+        except OSError:
+            pass
+
+
+def _can_resume_stream(stream: MediaStream, offset: int, meta: Dict[str, Any]) -> bool:
+    """Verify URL, 206 Content-Range offset, validators, and total size before appending."""
+    if offset <= 0 or stream.status != 206:
+        return False
+    if stream.winning_url != meta.get("winning_url"):
+        return False
+
+    cr = (stream.content_range or "").strip()
+    if not cr.lower().startswith(f"bytes {offset}-"):
+        return False
+    parsed = _parse_content_range(cr)
+    if parsed is None or parsed[0] != offset:
+        return False
+
+    meta_etag = str(meta.get("etag") or "").strip()
+    meta_lm = str(meta.get("last_modified") or "").strip()
+    resp_etag = (stream.etag or "").strip()
+    resp_lm = (stream.last_modified or "").strip()
+
+    if meta_etag and resp_etag != meta_etag:
+        return False
+    if meta_lm and resp_lm != meta_lm:
+        return False
+    if not meta_etag and not meta_lm and (resp_etag or resp_lm):
+        return False
+
+    meta_total = meta.get("total_size")
+    if isinstance(meta_total, int) and parsed[2] is not None and parsed[2] != meta_total:
+        return False
+    return True
+
+
+def _is_http_416(exc: BaseException) -> bool:
+    cause = getattr(exc, "__cause__", None)
+    if isinstance(cause, urllib.error.HTTPError) and cause.code == 416:
+        return True
+    return "HTTP Error 416" in str(exc)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -553,7 +688,7 @@ class HttpClient:
         except urllib.error.URLError as e:
             raise HttpError(f"网络请求失败: {e.reason}") from e
 
-    def open_media_candidates(
+    def _open_candidates_iter(
         self,
         urls: Iterable[str],
         default_ext: str,
@@ -561,6 +696,7 @@ class HttpClient:
         headers: Optional[Dict[str, str]] = None,
         mobile: bool = False,
         range_header: Optional[str] = None,
+        range_only_url: Optional[str] = None,
     ) -> MediaStream:
         """Open first candidate URL returning valid media bytes (rejects HTML/JSON error pages)."""
         cand_list = [c for c in urls if c]
@@ -568,6 +704,7 @@ class HttpClient:
         for idx, cand in enumerate(cand_list):
             is_last = idx == len(cand_list) - 1
             cand_timeout = self.config.timeout if is_last else min(self.config.timeout, 6)
+            cand_range = range_header if (range_header and (range_only_url is None or cand == range_only_url)) else None
             try:
                 return self._open_one(
                     cand,
@@ -575,7 +712,7 @@ class HttpClient:
                     expected_prefix=expected_prefix,
                     headers=headers,
                     mobile=mobile,
-                    range_header=range_header,
+                    range_header=cand_range,
                     timeout=cand_timeout,
                 )
             except urllib.error.HTTPError as e:
@@ -592,7 +729,7 @@ class HttpClient:
                             expected_prefix=expected_prefix,
                             headers=stripped,
                             mobile=mobile,
-                            range_header=range_header,
+                            range_header=cand_range,
                             timeout=cand_timeout,
                         )
                     except Exception as retry_err:
@@ -603,7 +740,26 @@ class HttpClient:
             except Exception as e:
                 last_err = e
                 continue
-        raise HttpError(f"所有候选地址均不可用: {last_err}")
+        raise HttpError(f"所有候选地址均不可用: {last_err}") from last_err
+
+    def open_media_candidates(
+        self,
+        urls: Iterable[str],
+        default_ext: str,
+        expected_prefix: str,
+        headers: Optional[Dict[str, str]] = None,
+        mobile: bool = False,
+        range_header: Optional[str] = None,
+    ) -> MediaStream:
+        """Open first candidate URL returning valid media bytes (rejects HTML/JSON error pages)."""
+        return self._open_candidates_iter(
+            urls,
+            default_ext=default_ext,
+            expected_prefix=expected_prefix,
+            headers=headers,
+            mobile=mobile,
+            range_header=range_header,
+        )
 
     def _open_one(
         self,
@@ -628,7 +784,7 @@ class HttpClient:
         resp = opener.open(req, timeout=self.config.timeout if timeout is None else max(1, int(timeout)))
         try:
             status = int(getattr(resp, "status", 200) or 200)
-            ct = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            ct = _header_get(resp.headers, "Content-Type").split(";")[0].strip().lower()
             if ct.startswith("text/html") or ct.startswith("application/json"):
                 raise HttpError(f"响应类型异常 ({ct})，可能触发了防盗链或风控")
 
@@ -637,8 +793,8 @@ class HttpClient:
                 raise HttpError("响应内容为空")
 
             # Mid-stream 206 byte ranges do not start with file magic headers.
-            content_range = resp.headers.get("Content-Range") or ""
-            is_start = (status != 206) or content_range.startswith("bytes 0-")
+            content_range = _header_get(resp.headers, "Content-Range")
+            is_start = (status != 206) or content_range.lower().startswith("bytes 0-")
             ext = default_ext
             if is_start:
                 head = first_chunk[:32]
@@ -659,10 +815,12 @@ class HttpClient:
                 ext=ext,
                 content_type=ct,
                 status=status,
-                content_length=resp.headers.get("Content-Length") or "",
+                content_length=_header_get(resp.headers, "Content-Length"),
                 content_range=content_range,
-                accept_ranges=resp.headers.get("Accept-Ranges") or "",
+                accept_ranges=_header_get(resp.headers, "Accept-Ranges"),
                 winning_url=url,
+                etag=_header_get(resp.headers, "ETag"),
+                last_modified=_header_get(resp.headers, "Last-Modified"),
             )
         except Exception:
             try:
@@ -670,6 +828,102 @@ class HttpClient:
             except Exception:
                 pass
             raise
+
+    def _open_for_download(
+        self,
+        cand_list: Sequence[str],
+        part_path: Path,
+        meta_path: Path,
+        default_ext: str,
+        expected_prefix: str,
+        headers: Optional[Dict[str, str]],
+        mobile: bool,
+    ) -> Tuple[MediaStream, int, Optional[Dict[str, Any]], bool]:
+        """Open a download stream, resuming via verified Range when sidecar matches."""
+        offset = 0
+        meta: Optional[Dict[str, Any]] = None
+        if part_path.is_file():
+            offset = part_path.stat().st_size
+            if offset > 0:
+                meta = _read_part_meta(meta_path)
+            if meta is None:
+                offset = 0
+
+        resume_url = meta["winning_url"] if (offset > 0 and meta is not None and meta["winning_url"] in cand_list) else None
+        try:
+            stream = self._open_candidates_iter(
+                cand_list,
+                default_ext=default_ext,
+                expected_prefix=expected_prefix,
+                headers=headers,
+                mobile=mobile,
+                range_header=(f"bytes={offset}-" if resume_url else None),
+                range_only_url=resume_url,
+            )
+        except HttpError as exc:
+            if resume_url is not None and _is_http_416(exc):
+                _cleanup_files(part_path, meta_path)
+                stream = self._open_candidates_iter(
+                    cand_list,
+                    default_ext=default_ext,
+                    expected_prefix=expected_prefix,
+                    headers=headers,
+                    mobile=mobile,
+                )
+                return stream, 0, None, False
+            raise
+
+        if resume_url is not None and meta is not None and _can_resume_stream(stream, offset, meta):
+            return stream, offset, meta, True
+
+        if stream.status == 206 and not (stream.content_range or "").lower().startswith("bytes 0-"):
+            stream.close()
+            _cleanup_files(part_path, meta_path)
+            stream = self._open_candidates_iter(
+                cand_list,
+                default_ext=default_ext,
+                expected_prefix=expected_prefix,
+                headers=headers,
+                mobile=mobile,
+            )
+            if stream.status == 206 and not (stream.content_range or "").lower().startswith("bytes 0-"):
+                stream.close()
+                raise HttpError("服务端未返回完整起始流，无法安全重下")
+
+        return stream, 0, None, False
+
+    def _stream_to_part(
+        self,
+        stream: MediaStream,
+        part_path: Path,
+        file_mode: str,
+        written_base: int,
+        expected_total: Optional[int],
+    ) -> None:
+        """Write stream bytes into part_path and raise HttpError on premature EOF."""
+        expected_resp_len = _expected_response_bytes(stream)
+        resp_received = len(stream.first_chunk)
+        with open(part_path, file_mode) as fh:
+            fh.write(stream.first_chunk)
+            while True:
+                try:
+                    chunk = stream.resp.read(65536)
+                except http.client.IncompleteRead as exc:
+                    if exc.partial:
+                        fh.write(exc.partial)
+                        resp_received += len(exc.partial)
+                    raise HttpError(f"下载流读取不完整: {exc}") from exc
+                except http.client.HTTPException as exc:
+                    raise HttpError(f"下载流 HTTP 异常: {exc}") from exc
+                if not chunk:
+                    break
+                fh.write(chunk)
+                resp_received += len(chunk)
+
+        if expected_resp_len is not None and resp_received < expected_resp_len:
+            raise HttpError(f"下载流提前中断: 预期 {expected_resp_len} 字节，实际仅收到 {resp_received} 字节")
+        if expected_total is not None and (written_base + resp_received) < expected_total:
+            raise HttpError(f"文件未下载完整: 当前 {written_base + resp_received} / {expected_total} 字节")
 
     def download_candidates(
         self,
@@ -681,40 +935,76 @@ class HttpClient:
         headers: Optional[Dict[str, str]] = None,
         mobile: bool = False,
     ) -> Path:
-        """Try candidate URLs in priority order and save atomically once valid media bytes arrive."""
-        stream = self.open_media_candidates(
-            urls,
-            default_ext=default_ext,
-            expected_prefix=expected_prefix,
-            headers=headers,
-            mobile=mobile,
-        )
+        """Try candidate URLs, resume validated partials on drops, and save atomically."""
+        cand_list = [c for c in urls if c]
         dest_dir.mkdir(parents=True, exist_ok=True)
-        final_path = dest_dir / f"{stem}{stream.ext}"
-        if final_path.exists() and final_path.stat().st_size > 1024:
-            stream.close()
-            return final_path
-
         part_path = dest_dir / f".{stem}.part"
-        try:
-            with open(part_path, "wb") as fh:
-                fh.write(stream.first_chunk)
-                while True:
-                    chunk = stream.resp.read(65536)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
-            part_path.replace(final_path)
-            return final_path
-        except Exception:
-            if part_path.exists():
-                try:
-                    part_path.unlink()
-                except OSError:
-                    pass
-            raise
-        finally:
-            stream.close()
+        meta_path = dest_dir / f".{stem}.part.meta"
+
+        pre_meta = _read_part_meta(meta_path) if (part_path.is_file() and part_path.stat().st_size > 0) else None
+        has_resume_candidate = bool(pre_meta and pre_meta.get("winning_url") in cand_list)
+        had_started_stream = False
+        retries_left = _DOWNLOAD_MAX_RETRIES
+
+        while True:
+            stream: Optional[MediaStream] = None
+            try:
+                stream, written_base, meta, is_resume = self._open_for_download(
+                    cand_list,
+                    part_path=part_path,
+                    meta_path=meta_path,
+                    default_ext=default_ext,
+                    expected_prefix=expected_prefix,
+                    headers=headers,
+                    mobile=mobile,
+                )
+                had_started_stream = True
+
+                final_ext = (str(meta.get("ext") or "") if (is_resume and meta) else "") or stream.ext
+                final_path = dest_dir / f"{stem}{final_ext}"
+                if final_path.exists() and final_path.stat().st_size > 1024:
+                    _cleanup_files(part_path, meta_path)
+                    return final_path
+
+                expected_total = _expected_total_size(stream, meta if is_resume else None)
+                if not is_resume:
+                    fresh_meta = {
+                        "winning_url": stream.winning_url,
+                        "etag": stream.etag,
+                        "last_modified": stream.last_modified,
+                        "ext": final_ext,
+                        "total_size": expected_total,
+                    }
+                    _write_part_meta(meta_path, fresh_meta)
+                elif meta is not None and meta.get("total_size") is None and expected_total is not None:
+                    meta["total_size"] = expected_total
+                    _write_part_meta(meta_path, meta)
+
+                self._stream_to_part(
+                    stream,
+                    part_path=part_path,
+                    file_mode=("ab" if is_resume else "wb"),
+                    written_base=written_base,
+                    expected_total=expected_total,
+                )
+                stream.close()
+                stream = None
+
+                part_path.replace(final_path)
+                _cleanup_files(meta_path)
+                return final_path
+            except (OSError, HttpError):
+                can_retry = (had_started_stream or has_resume_candidate) and retries_left > 0
+                if not can_retry:
+                    _cleanup_files(part_path, meta_path)
+                    raise
+                retries_left -= 1
+            except Exception:
+                _cleanup_files(part_path, meta_path)
+                raise
+            finally:
+                if stream is not None:
+                    stream.close()
 
     def fetch_media_bytes(
         self,
