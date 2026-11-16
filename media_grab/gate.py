@@ -13,7 +13,7 @@ from typing import Any, Callable, Optional
 def _code_mtime() -> float:
     base = Path(__file__).resolve().parent
     latest = 0.0
-    for pattern in ("*.py", "extractors/*.py"):
+    for pattern in ("*.py", "extractors/*.py", "static/*"):
         for fp in base.glob(pattern):
             try:
                 latest = max(latest, fp.stat().st_mtime)
