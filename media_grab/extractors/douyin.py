@@ -1,19 +1,43 @@
 """Douyin extractor: watermark-free highest-bitrate videos, image slides, and live photos."""
 
 import json
+import logging
 import os
 import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 from ..config import DEFAULT_CONFIG_DIR, Config
 from ..http_client import HttpClient, warm_urls
 from ..utils import dedupe_keep_order, extract_balanced_json, loads_relaxed_json, normalize_http_url
 from . import ExtractResult, ExtractionError, MediaAsset
+
+logger = logging.getLogger("media_grab.douyin")
+
+
+def _configure_log_from_env() -> None:
+    """Enable douyin extractor debug/info logging on demand via MEDIA_GRAB_LOG."""
+    raw = os.environ.get("MEDIA_GRAB_LOG", "").strip().upper()
+    if not raw:
+        return
+    level = getattr(logging, raw, None)
+    if not isinstance(level, int):
+        return
+    logger.setLevel(level)
+    if not getattr(logger, "_media_grab_env_handler", False) and not logging.getLogger().handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        logger.addHandler(handler)
+        logger._media_grab_env_handler = True  # type: ignore[attr-defined]
+        logger.propagate = False
+
+
+_configure_log_from_env()
 
 DOUYIN_DL_HEADERS = {"Referer": "https://www.douyin.com/"}
 
@@ -461,7 +485,8 @@ def _fetch_aweme_from_feed(aweme_id: str, client: HttpClient) -> Optional[Dict[s
         try:
             feed_resp = client.get(feed_url, mobile=True, follow_redirects=True)
             payload = json.loads(feed_resp.text())
-        except Exception:
+        except Exception as exc:
+            logger.debug("douyin feed request failed url=%s: %s", feed_url, exc)
             continue
         aweme_list = payload.get("aweme_list") if isinstance(payload, dict) else None
         if not isinstance(aweme_list, list):
@@ -479,130 +504,217 @@ def _share_url_for(target_url: str, aweme_id: str) -> str:
     return f"https://www.iesdouyin.com/share/video/{aweme_id}/"
 
 
-def extract_douyin(url: str, client: HttpClient, config: Config) -> ExtractResult:
-    """Fetch Douyin share page quickly (pre-warmed ttwid + single-hop / parallel cold start) with fallbacks."""
-    is_real_http = isinstance(client, HttpClient)
-    cookie_fn = getattr(client, "cookie_for_url", None)
-    direct_id = _extract_aweme_id(url)
-
-    html = ""
+@dataclass
+class _DouyinContext:
+    url: str
+    client: HttpClient
+    config: Config
+    is_real_http: bool
+    cookie_fn: Any
+    direct_id: str
+    html: str = ""
     data: Optional[Dict[str, Any]] = None
-    resolved_url = url
-    aweme_id = direct_id
-    used_cached_ttwid = False
+    resolved_url: str = ""
+    aweme_id: str = ""
+    used_cached_ttwid: bool = False
+    initial_cookie: str = ""
+    cached_ttwid: str = ""
+    refresh_base_share: str = ""
+    refresh_cookie: str = ""
 
-    if is_real_http and direct_id and not config.douyin_cookie:
-        # Skip downloading heavy 889KB desktop SSR HTML on www.douyin.com when aweme_id is already in URL.
-        target_share = _share_url_for(url, direct_id)
-        had_cached = bool(peek_cached_ttwid(use_disk_cache=True))
-        ttwid = _get_anonymous_ttwid(config, use_disk_cache=True)
-        used_cached_ttwid = bool(ttwid and had_cached)
+
+def _describe_parse_miss(data: Optional[Dict[str, Any]]) -> str:
+    if data is None:
+        return "no _ROUTER_DATA or RENDER_DATA JSON in page"
+    return "JSON parsed cleanly but aweme item missing"
+
+
+def _apply_primary_response(ctx: _DouyinContext, resp: Any, update_id: bool = True) -> str:
+    ctx.resolved_url = resp.url
+    ctx.html = resp.text()
+    ctx.data = _parse_douyin_json(ctx.html)
+    if update_id:
+        ctx.aweme_id = _extract_aweme_id(ctx.resolved_url) or ctx.direct_id
+    return "" if _has_aweme_item(ctx.data) else _describe_parse_miss(ctx.data)
+
+
+def _step_direct_share_fast(ctx: _DouyinContext) -> str:
+    # Skip heavy desktop SSR HTML on www.douyin.com when aweme_id is already in URL.
+    target_share = _share_url_for(ctx.url, ctx.direct_id)
+    had_cached = bool(peek_cached_ttwid(use_disk_cache=True))
+    ttwid = _get_anonymous_ttwid(ctx.config, use_disk_cache=True)
+    ctx.used_cached_ttwid = bool(ttwid and had_cached)
+    hdrs = {"Cookie": f"ttwid={ttwid}"} if ttwid else None
+    resp = ctx.client.get(target_share, headers=hdrs, mobile=True, follow_redirects=True)
+    return _apply_primary_response(ctx, resp, update_id=False)
+
+
+def _step_cookie_ttwid_page(ctx: _DouyinContext) -> str:
+    resp = ctx.client.get(ctx.url, mobile=True, follow_redirects=True)
+    return _apply_primary_response(ctx, resp)
+
+
+def _step_cached_ttwid_page(ctx: _DouyinContext) -> str:
+    ctx.used_cached_ttwid = True
+    hdrs = {"Cookie": _merge_cookie_header(ctx.initial_cookie, "ttwid", ctx.cached_ttwid)}
+    resp = ctx.client.get(ctx.url, headers=hdrs, mobile=True, follow_redirects=True)
+    return _apply_primary_response(ctx, resp)
+
+
+def _step_cold_start_parallel(ctx: _DouyinContext) -> str:
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_nr = pool.submit(ctx.client.get, ctx.url, None, True, False)
+        fut_tok = pool.submit(_get_anonymous_ttwid, ctx.config, False, True)
+        nr_resp = fut_nr.result()
+        ttwid = fut_tok.result()
+
+    loc = nr_resp.headers.get("location") or nr_resp.url or ctx.url
+    ctx.resolved_url = loc
+    ctx.aweme_id = _extract_aweme_id(loc) or ctx.direct_id
+    if nr_resp.status < 300 and nr_resp.body:
+        ctx.html = nr_resp.text()
+        ctx.data = _parse_douyin_json(ctx.html)
+    elif not ctx.aweme_id and loc and loc != ctx.url:
         hdrs = {"Cookie": f"ttwid={ttwid}"} if ttwid else None
-        resp = client.get(target_share, headers=hdrs, mobile=True, follow_redirects=True)
-        resolved_url = resp.url
-        html = resp.text()
-        data = _parse_douyin_json(html)
-    elif is_real_http:
-        existing_cookie = cookie_fn(url) if callable(cookie_fn) else ""
-        if _has_cookie_key(existing_cookie, "ttwid"):
-            resp = client.get(url, mobile=True, follow_redirects=True)
-            resolved_url = resp.url
-            html = resp.text()
-            data = _parse_douyin_json(html)
-            aweme_id = _extract_aweme_id(resolved_url) or direct_id
-        else:
-            cached_ttwid = peek_cached_ttwid(use_disk_cache=True)
-            if cached_ttwid:
-                used_cached_ttwid = True
-                hdrs = {"Cookie": _merge_cookie_header(existing_cookie, "ttwid", cached_ttwid)}
-                resp = client.get(url, headers=hdrs, mobile=True, follow_redirects=True)
-                resolved_url = resp.url
-                html = resp.text()
-                data = _parse_douyin_json(html)
-                aweme_id = _extract_aweme_id(resolved_url) or direct_id
-            else:
-                # Cold start: resolve shortlink redirect and register ttwid concurrently.
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    fut_nr = pool.submit(client.get, url, None, True, False)
-                    fut_tok = pool.submit(_get_anonymous_ttwid, config, False, True)
-                    nr_resp = fut_nr.result()
-                    ttwid = fut_tok.result()
+        resp = ctx.client.get(loc, headers=hdrs, mobile=True, follow_redirects=True)
+        _apply_primary_response(ctx, resp)
+    if not _has_aweme_item(ctx.data) and ctx.aweme_id:
+        target_share = _share_url_for(loc, ctx.aweme_id)
+        share_cookie = ctx.cookie_fn(target_share) if callable(ctx.cookie_fn) else ""
+        hdrs = {"Cookie": _merge_cookie_header(share_cookie, "ttwid", ttwid)} if ttwid else None
+        resp = ctx.client.get(target_share, headers=hdrs, mobile=True, follow_redirects=True)
+        _apply_primary_response(ctx, resp, update_id=False)
+    return "" if _has_aweme_item(ctx.data) else _describe_parse_miss(ctx.data)
 
-                loc = nr_resp.headers.get("location") or nr_resp.url or url
-                resolved_url = loc
-                aweme_id = _extract_aweme_id(loc) or direct_id
-                if nr_resp.status < 300 and nr_resp.body:
-                    html = nr_resp.text()
-                    data = _parse_douyin_json(html)
-                elif not aweme_id and loc and loc != url:
-                    hdrs = {"Cookie": f"ttwid={ttwid}"} if ttwid else None
-                    resp = client.get(loc, headers=hdrs, mobile=True, follow_redirects=True)
-                    resolved_url = resp.url
-                    html = resp.text()
-                    data = _parse_douyin_json(html)
-                    aweme_id = _extract_aweme_id(resolved_url) or direct_id
-                if not _has_aweme_item(data) and aweme_id:
-                    target_share = _share_url_for(loc, aweme_id)
-                    share_cookie = cookie_fn(target_share) if callable(cookie_fn) else ""
-                    hdrs = (
-                        {"Cookie": _merge_cookie_header(share_cookie, "ttwid", ttwid)}
-                        if ttwid
-                        else None
-                    )
-                    resp = client.get(target_share, headers=hdrs, mobile=True, follow_redirects=True)
-                    resolved_url = resp.url
-                    html = resp.text()
-                    data = _parse_douyin_json(html)
-    else:
-        resp = client.get(url, mobile=True, follow_redirects=True)
-        resolved_url = resp.url
-        html = resp.text()
-        data = _parse_douyin_json(html)
-        aweme_id = _extract_aweme_id(resolved_url) or direct_id
 
-    if not _has_aweme_item(data) and aweme_id and "iesdouyin.com" not in (resolved_url or "").lower():
-        share_url = f"https://www.iesdouyin.com/share/video/{aweme_id}/"
-        try:
-            resp2 = client.get(share_url, mobile=True, follow_redirects=True)
-            html = resp2.text()
-            resolved_url = resp2.url
-            cand = _parse_douyin_json(html)
-            if _has_aweme_item(cand) or not data:
-                data = cand
-        except Exception:
-            pass
+def _step_plain_page(ctx: _DouyinContext) -> str:
+    resp = ctx.client.get(ctx.url, mobile=True, follow_redirects=True)
+    return _apply_primary_response(ctx, resp)
 
-    if not _has_aweme_item(data) and aweme_id:
-        base_share = _share_url_for(resolved_url, aweme_id)
-        existing_cookie = cookie_fn(base_share) if callable(cookie_fn) else ""
-        if not _has_cookie_key(existing_cookie, "ttwid"):
-            need_refresh = used_cached_ttwid
-            ttwid = _get_anonymous_ttwid(
-                config,
-                force_refresh=need_refresh,
-                use_disk_cache=is_real_http,
+
+def _select_primary_strategy(ctx: _DouyinContext) -> Tuple[str, Callable[[_DouyinContext], str]]:
+    if ctx.is_real_http and ctx.direct_id and not ctx.config.douyin_cookie:
+        return "direct_share_fast", _step_direct_share_fast
+    if ctx.is_real_http:
+        ctx.initial_cookie = ctx.cookie_fn(ctx.url) if callable(ctx.cookie_fn) else ""
+        if _has_cookie_key(ctx.initial_cookie, "ttwid"):
+            return "cookie_ttwid_page", _step_cookie_ttwid_page
+        ctx.cached_ttwid = peek_cached_ttwid(use_disk_cache=True)
+        if ctx.cached_ttwid:
+            return "cached_ttwid_page", _step_cached_ttwid_page
+        return "cold_start_parallel", _step_cold_start_parallel
+    return "plain_page", _step_plain_page
+
+
+def _can_iesdouyin_fallback(ctx: _DouyinContext) -> bool:
+    return bool(ctx.aweme_id) and "iesdouyin.com" not in (ctx.resolved_url or "").lower()
+
+
+def _step_iesdouyin_fallback(ctx: _DouyinContext) -> str:
+    share_url = f"https://www.iesdouyin.com/share/video/{ctx.aweme_id}/"
+    try:
+        resp2 = ctx.client.get(share_url, mobile=True, follow_redirects=True)
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+    ctx.html = resp2.text()
+    ctx.resolved_url = resp2.url
+    cand = _parse_douyin_json(ctx.html)
+    if _has_aweme_item(cand) or not ctx.data:
+        ctx.data = cand
+    return "" if _has_aweme_item(ctx.data) else _describe_parse_miss(cand)
+
+
+def _can_refresh_ttwid_fallback(ctx: _DouyinContext) -> bool:
+    if not ctx.aweme_id:
+        return False
+    ctx.refresh_base_share = _share_url_for(ctx.resolved_url, ctx.aweme_id)
+    ctx.refresh_cookie = ctx.cookie_fn(ctx.refresh_base_share) if callable(ctx.cookie_fn) else ""
+    return not _has_cookie_key(ctx.refresh_cookie, "ttwid")
+
+
+def _step_refresh_ttwid_fallback(ctx: _DouyinContext) -> str:
+    ttwid = _get_anonymous_ttwid(
+        ctx.config,
+        force_refresh=ctx.used_cached_ttwid,
+        use_disk_cache=ctx.is_real_http,
+    )
+    if not ttwid:
+        return "failed to obtain anonymous ttwid"
+    try:
+        hdrs = {"Cookie": _merge_cookie_header(ctx.refresh_cookie, "ttwid", ttwid)}
+        resp3 = ctx.client.get(ctx.refresh_base_share, headers=hdrs, mobile=True, follow_redirects=True)
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+    ctx.html = resp3.text()
+    cand = _parse_douyin_json(ctx.html)
+    if _has_aweme_item(cand) or not ctx.data:
+        ctx.data = cand
+    return "" if _has_aweme_item(ctx.data) else _describe_parse_miss(cand)
+
+
+def _can_feed_fallback(ctx: _DouyinContext) -> bool:
+    return bool(ctx.aweme_id)
+
+
+def _step_feed_fallback(ctx: _DouyinContext) -> str:
+    feed_data = _fetch_aweme_from_feed(ctx.aweme_id, ctx.client)
+    if feed_data:
+        ctx.data = feed_data
+        return ""
+    return "feed API returned no matching aweme_id"
+
+
+_FALLBACK_STRATEGIES: Tuple[
+    Tuple[str, Callable[[_DouyinContext], bool], Callable[[_DouyinContext], str]],
+    ...,
+] = (
+    ("iesdouyin_share_fallback", _can_iesdouyin_fallback, _step_iesdouyin_fallback),
+    ("refresh_ttwid_fallback", _can_refresh_ttwid_fallback, _step_refresh_ttwid_fallback),
+    ("feed_api_fallback", _can_feed_fallback, _step_feed_fallback),
+)
+
+
+def extract_douyin(url: str, client: HttpClient, config: Config) -> ExtractResult:
+    """Fetch Douyin item through an ordered strategy pipeline with fallbacks and per-hop logging."""
+    _configure_log_from_env()
+    direct_id = _extract_aweme_id(url)
+    ctx = _DouyinContext(
+        url=url,
+        client=client,
+        config=config,
+        is_real_http=isinstance(client, HttpClient),
+        cookie_fn=getattr(client, "cookie_for_url", None),
+        direct_id=direct_id,
+        resolved_url=url,
+        aweme_id=direct_id,
+    )
+
+    primary_name, primary_fn = _select_primary_strategy(ctx)
+    pipeline: List[Tuple[str, Callable[[_DouyinContext], bool], Callable[[_DouyinContext], str]]] = [
+        (primary_name, lambda _ctx: True, primary_fn),
+        *_FALLBACK_STRATEGIES,
+    ]
+
+    attempted_hop = 0
+    for name, is_eligible, run_step in pipeline:
+        if not is_eligible(ctx):
+            logger.debug("douyin skip %s (precondition not met)", name)
+            continue
+        attempted_hop += 1
+        logger.debug("douyin hop #%d trying %s url=%s", attempted_hop, name, ctx.resolved_url or ctx.url)
+        fail_reason = run_step(ctx)
+        if _has_aweme_item(ctx.data):
+            logger.info(
+                "douyin extract succeeded at hop #%d (%s) aweme_id=%s",
+                attempted_hop,
+                name,
+                ctx.aweme_id or "unknown",
             )
-            if ttwid:
-                try:
-                    hdrs = {"Cookie": _merge_cookie_header(existing_cookie, "ttwid", ttwid)}
-                    resp3 = client.get(base_share, headers=hdrs, mobile=True, follow_redirects=True)
-                    html = resp3.text()
-                    cand = _parse_douyin_json(html)
-                    if _has_aweme_item(cand) or not data:
-                        data = cand
-                except Exception:
-                    pass
+            return parse_douyin_payload(ctx.data, ctx.aweme_id, config)
+        logger.debug("douyin hop #%d failed (%s): %s", attempted_hop, name, fail_reason or "no aweme item")
 
-    if not _has_aweme_item(data) and aweme_id:
-        feed_data = _fetch_aweme_from_feed(aweme_id, client)
-        if feed_data:
-            data = feed_data
-
-    if not _has_aweme_item(data):
-        if any(k in html for k in ("验证码", "安全验证", "captcha", "waf")):
-            raise ExtractionError("抖音触发了安全验证（滑块/风控），请在 config.json 配置 douyin_cookie 后重试。")
-        if data:
-            raise ExtractionError("未在页面数据中找到作品详情，可能是接口结构已调整或作品已失效。")
-        raise ExtractionError("未能从抖音分享页提取作品数据，请检查链接是否有效或已设为私密。")
-
-    return parse_douyin_payload(data, aweme_id, config)
+    if any(k in ctx.html for k in ("验证码", "安全验证", "captcha", "waf")):
+        raise ExtractionError("抖音触发了安全验证（滑块/风控），请在 config.json 配置 douyin_cookie 后重试。")
+    if ctx.data:
+        raise ExtractionError("未在页面数据中找到作品详情，可能是接口结构已调整或作品已失效。")
+    raise ExtractionError("未能从抖音分享页提取作品数据，请检查链接是否有效或已设为私密。")

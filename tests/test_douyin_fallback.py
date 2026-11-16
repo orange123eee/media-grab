@@ -342,5 +342,99 @@ class DouyinFallbackTests(unittest.TestCase):
         self.assertEqual(store.thumb_urls_for(sa), ["https://p3.douyinpic.com/cover.webp", "https://p9.douyinpic.com/cover.jpeg"])
 
 
+class DouyinPipelineLoggingTests(unittest.TestCase):
+    def setUp(self):
+        import logging
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old_cfg_dir = os.environ.get("MEDIA_GRAB_CONFIG_DIR")
+        self._old_log_env = os.environ.get("MEDIA_GRAB_LOG")
+        os.environ["MEDIA_GRAB_CONFIG_DIR"] = self._tmp.name
+        _TTWID_CACHE["value"] = ""
+        _TTWID_CACHE["expires_at"] = 0.0
+        self._old_level = douyin.logger.level
+        self._old_propagate = douyin.logger.propagate
+        douyin.logger.setLevel(logging.NOTSET)
+
+    def tearDown(self):
+        if self._old_cfg_dir is None:
+            os.environ.pop("MEDIA_GRAB_CONFIG_DIR", None)
+        else:
+            os.environ["MEDIA_GRAB_CONFIG_DIR"] = self._old_cfg_dir
+        if self._old_log_env is None:
+            os.environ.pop("MEDIA_GRAB_LOG", None)
+        else:
+            os.environ["MEDIA_GRAB_LOG"] = self._old_log_env
+        douyin.logger.setLevel(self._old_level)
+        douyin.logger.propagate = self._old_propagate
+        _TTWID_CACHE["value"] = ""
+        _TTWID_CACHE["expires_at"] = 0.0
+        self._tmp.cleanup()
+
+    def test_cached_ttwid_force_refresh_and_per_hop_debug_info_logs(self):
+        import time
+
+        target_id = "7708888888888888888"
+        cfg = Config()
+        client = HttpClient(cfg)
+        _TTWID_CACHE["value"] = "stale_tok"
+        _TTWID_CACHE["expires_at"] = time.time() + 3600
+
+        seen_cookies = []
+
+        def fake_get(url, headers=None, mobile=False, follow_redirects=True):
+            cookie = (headers or {}).get("Cookie", "")
+            seen_cookies.append((url, cookie))
+            if "ttwid=fresh_tok" in cookie:
+                return HttpResponse(200, url, {}, _full_router_html(target_id, "刷新命中"))
+            return HttpResponse(200, f"https://www.iesdouyin.com/share/video/{target_id}/", {}, _shell_router_html())
+
+        with (
+            patch.object(client, "get", side_effect=fake_get),
+            patch.object(douyin, "_register_ttwid", return_value="fresh_tok") as reg_mock,
+            self.assertLogs("media_grab.douyin", level="DEBUG") as logs,
+        ):
+            res = extract_douyin("https://v.douyin.com/stale/", client, cfg)
+
+        self.assertEqual(res.title, "刷新命中")
+        reg_mock.assert_called_once()
+        self.assertIn("ttwid=stale_tok", seen_cookies[0][1])
+        self.assertIn("ttwid=fresh_tok", seen_cookies[1][1])
+        joined = "\n".join(logs.output)
+        self.assertIn("DEBUG:media_grab.douyin:douyin hop #1 trying cached_ttwid_page", joined)
+        self.assertIn("DEBUG:media_grab.douyin:douyin hop #1 failed (cached_ttwid_page):", joined)
+        self.assertIn("INFO:media_grab.douyin:douyin extract succeeded at hop #2 (refresh_ttwid_fallback)", joined)
+
+    def test_logging_silent_at_warning_and_enabled_by_env(self):
+        import logging
+
+        os.environ.pop("MEDIA_GRAB_LOG", None)
+        douyin.logger.setLevel(logging.NOTSET)
+        self.assertFalse(douyin.logger.isEnabledFor(logging.INFO))
+        self.assertFalse(douyin.logger.isEnabledFor(logging.DEBUG))
+
+        class _FakeClient:
+            def get(self, url, **kwargs):
+                return HttpResponse(
+                    200,
+                    "https://www.iesdouyin.com/share/video/7708888888888888888/",
+                    {},
+                    _full_router_html("7708888888888888888", "静默测试"),
+                )
+
+        # No WARNING+ records emitted under default level
+        with self.assertNoLogs("media_grab.douyin", level="WARNING"):
+            res = extract_douyin("https://v.douyin.com/quiet/", _FakeClient(), Config())
+        self.assertEqual(res.title, "静默测试")
+
+        # Setting MEDIA_GRAB_LOG=debug switches logger level to DEBUG
+        os.environ["MEDIA_GRAB_LOG"] = "debug"
+        try:
+            douyin._configure_log_from_env()
+            self.assertTrue(douyin.logger.isEnabledFor(logging.DEBUG))
+        finally:
+            os.environ.pop("MEDIA_GRAB_LOG", None)
+
+
 if __name__ == "__main__":
     unittest.main()
