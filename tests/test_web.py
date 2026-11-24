@@ -272,9 +272,15 @@ class WebServerTests(unittest.TestCase):
         self.assertEqual(hst, 200)
         self.assertEqual(hhdrs.get("Connection", "").lower(), "close")
 
+        est, ehdrs, _ = self._req("/api/extract", method="POST", body={"input": "no-url"})
+        self.assertEqual(est, 400)
+        self.assertEqual(ehdrs.get("Connection", "").lower(), "close")
+
         _, _, idx_raw = self._req("/")
         idx_html = idx_raw.decode("utf-8")
         self.assertIn("scheduleReconnect", idx_html)
+        self.assertIn("scheduleResumeProbe", idx_html)
+        self.assertNotIn("if (!alive || !/超时/.test(msg))", idx_html)
         self.assertIn("pageshow", idx_html)
         self.assertIn("cache: 'no-store'", idx_html)
         self.assertIn(".badge.x", idx_html)

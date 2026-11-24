@@ -741,7 +741,8 @@ async function fetchJsonWithRetry(url, options, timeoutMs = 22000, retries = 1, 
         }
       }
       if (attempt < retries) {
-        const waitMs = retryOnAbort ? (attempt === 0 ? 180 : 420) : 250;
+        const waits = retryOnAbort ? [200, 450, 850] : [250, 500];
+        const waitMs = waits[attempt] || 900;
         await new Promise(resolve => setTimeout(resolve, waitMs));
       }
     } finally {
@@ -847,12 +848,36 @@ async function runExtract(text) {
   }, 100);
 
   let okRender = false;
+  const extractReq = () => fetchJsonWithRetry('/api/extract', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input: val })
+  }, 22000, 1);
+
   try {
-    const { res: r, data: d } = await fetchJsonWithRetry('/api/extract', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: val })
-    }, 22000, 1);
+    let pair;
+    try {
+      pair = await extractReq();
+    } catch (firstErr) {
+      const firstMsg = firstErr && firstErr.message ? firstErr.message : '';
+      let alive = false;
+      try {
+        await fetchJsonWithRetry('/api/heartbeat', { method: 'POST' }, 1800, 2, true);
+        markOnline();
+        alive = true;
+      } catch (_) {}
+      if (alive && !/超时/.test(firstMsg)) {
+        pair = await extractReq();
+      } else {
+        if (!alive) {
+          showWakeBanner(true);
+          setOnline(false, '服务未连接');
+          scheduleReconnect();
+        }
+        throw firstErr;
+      }
+    }
+    const { res: r, data: d } = pair;
 
     if (!r.ok || !d.ok) {
       showErr(d.error || ('请求失败: ' + r.status));
@@ -878,18 +903,6 @@ async function runExtract(text) {
     showToast('解析成功 (' + sec + 's)');
   } catch (e) {
     const msg = e && e.message ? e.message : '连接失败';
-    let alive = true;
-    try {
-      await fetchJsonWithRetry('/api/heartbeat', { method: 'POST' }, 1200, 1, true);
-      markOnline();
-    } catch (_) {
-      alive = false;
-    }
-    if (!alive || !/超时/.test(msg)) {
-      showWakeBanner(true);
-      setOnline(false, '服务未连接');
-      scheduleReconnect();
-    }
     showErr('提取失败: ' + msg);
     setHint('');
   } finally {
@@ -1685,6 +1698,7 @@ $('pasteBtn').addEventListener('click', async () => {
 });
 
 let manualStopped = false;
+let resumeProbeTimer = null;
 
 async function refreshCfgStatus(fast = false) {
   const ep = ++connEpoch;
@@ -1693,8 +1707,8 @@ async function refreshCfgStatus(fast = false) {
     const { res: r, data: c } = await fetchJsonWithRetry(
       '/api/config',
       {},
-      fast ? 1800 : 3500,
-      fast ? 2 : 1,
+      fast ? 2500 : 4000,
+      fast ? 3 : 2,
       true
     );
     if (!r.ok) return false;
@@ -1708,10 +1722,10 @@ async function refreshCfgStatus(fast = false) {
     markOnline();
     return true;
   } catch (e) {
-    if (ep === connEpoch && lastOkAt === startOkAt && !manualStopped) {
+    if (ep === connEpoch && lastOkAt === startOkAt && !manualStopped && document.visibilityState === 'visible') {
       showWakeBanner(true);
       setOnline(false, '网关未连接 · 请点击唤醒');
-      scheduleReconnect();
+      scheduleReconnect(1200);
     }
     return false;
   }
@@ -1731,30 +1745,42 @@ function sendHeartbeat() {
     .catch(() => {});
 }
 
+function scheduleResumeProbe() {
+  clearTimeout(resumeProbeTimer);
+  resumeProbeTimer = setTimeout(() => {
+    resumeProbeTimer = null;
+    if (document.visibilityState !== 'visible' || manualStopped) return;
+    refreshCfgStatus(true);
+    sendHeartbeat();
+  }, 90);
+}
+
 setInterval(() => {
   if (document.visibilityState === 'visible' && !manualStopped) sendHeartbeat();
 }, 20000);
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
+    clearTimeout(resumeProbeTimer);
+    resumeProbeTimer = null;
     stopReconnect();
     if (navigator.sendBeacon) navigator.sendBeacon('/api/leave?mode=hidden', '');
   } else {
     manualStopped = false;
-    refreshCfgStatus(true);
-    sendHeartbeat();
+    scheduleResumeProbe();
   }
 });
 
 window.addEventListener('pageshow', (e) => {
   if (e && e.persisted) {
     manualStopped = false;
-    refreshCfgStatus(true);
-    sendHeartbeat();
+    scheduleResumeProbe();
   }
 });
 
 window.addEventListener('pagehide', () => {
+  clearTimeout(resumeProbeTimer);
+  resumeProbeTimer = null;
   stopReconnect();
   if (navigator.sendBeacon) navigator.sendBeacon('/api/leave?mode=close', '');
 });

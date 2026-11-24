@@ -122,7 +122,7 @@ if [ "$RESTART" -eq 1 ]; then
 fi
 
 if ! is_listening; then
-  nohup python3 -B -m media_grab.web --host 127.0.0.1 --port "$PORT" --idle-timeout 180 --hibernate-on-idle --allow-shutdown > "$LOG_DIR/media-grab-web.log" 2>&1 &
+  nohup python3 -B -m media_grab.web --host 127.0.0.1 --port "$PORT" --idle-timeout 180 --hibernate-on-idle --allow-shutdown </dev/null > "$LOG_DIR/media-grab-web.log" 2>&1 &
   for _ in $(seq 1 30); do
     if is_listening; then
       break

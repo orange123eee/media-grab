@@ -616,7 +616,7 @@ def make_handler(state: WebAppState):
             if path == "/api/leave":
                 self._drain_body()
                 mode = parse_qs(parsed.query).get("mode", ["hidden"])[0]
-                delay = 8.0 if mode == "close" else 60.0
+                delay = 30.0 if mode == "close" else 300.0
                 state.mark_leave(delay)
                 self._send_json(HTTPStatus.OK, {"ok": True, "mode": mode}, close_conn=True)
                 return
@@ -625,12 +625,12 @@ def make_handler(state: WebAppState):
                 try:
                     payload = self._read_json()
                 except Exception:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "请求 JSON 格式有误"})
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "请求 JSON 格式有误"}, close_conn=True)
                     return
                 raw_input = str(payload.get("input") or "")
                 url = extract_url(raw_input)
                 if not url:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "未在文本里识别到有效链接"})
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "未在文本里识别到有效链接"}, close_conn=True)
                     return
 
                 cfg, client = state.client()
@@ -638,10 +638,10 @@ def make_handler(state: WebAppState):
                     with state.busy():
                         result = extract(url, client, cfg)
                 except (ExtractionError, HttpError) as e:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(e)})
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(e)}, close_conn=True)
                     return
                 except Exception as e:
-                    self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": f"解析异常: {e}"})
+                    self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": f"解析异常: {e}"}, close_conn=True)
                     return
 
                 job = state.store.put_result(result)
@@ -674,6 +674,7 @@ def make_handler(state: WebAppState):
                             for sa in job.assets
                         ],
                     },
+                    close_conn=True,
                 )
                 return
 
@@ -692,30 +693,30 @@ def make_handler(state: WebAppState):
                 try:
                     payload = self._read_json()
                 except Exception:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "请求 JSON 格式有误"})
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "请求 JSON 格式有误"}, close_conn=True)
                     return
                 if not isinstance(payload, dict):
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "请求 JSON 格式有误"})
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "请求 JSON 格式有误"}, close_conn=True)
                     return
                 job = state.store.get_job(job_id)
                 if not job:
-                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "任务不存在或已过期，请重新提取"})
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "任务不存在或已过期，请重新提取"}, close_conn=True)
                     return
                 selected_ids: Optional[List[str]] = None
                 if payload.get("asset_ids") is not None:
                     if not isinstance(payload["asset_ids"], list):
-                        self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "asset_ids 参数必须为数组"})
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "asset_ids 参数必须为数组"}, close_conn=True)
                         return
                     selected_ids = [str(x) for x in payload["asset_ids"]]
                 target_assets = _filter_job_assets(job, selected_ids)
                 if not target_assets:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "未选中任何有效文件"})
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "未选中任何有效文件"}, close_conn=True)
                     return
                 cfg, client = state.client()
                 with state.busy():
                     saved, errs = _save_job_to_output(job, state.store, client, cfg, target_assets=target_assets)
                 if not saved:
-                    self._send_json(HTTPStatus.BAD_GATEWAY, {"ok": False, "error": "; ".join(errs) or "保存失败"})
+                    self._send_json(HTTPStatus.BAD_GATEWAY, {"ok": False, "error": "; ".join(errs) or "保存失败"}, close_conn=True)
                     return
                 self._send_json(
                     HTTPStatus.OK,
@@ -726,6 +727,7 @@ def make_handler(state: WebAppState):
                         "dir": cfg.output_dir.name,
                         "errors": errs,
                     },
+                    close_conn=True,
                 )
                 return
 
